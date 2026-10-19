@@ -1,5 +1,7 @@
 package demo.lavka.auth;
 
+import java.util.Base64;
+
 import demo.lavka.TestcontainersConfiguration;
 import demo.lavka.repository.UserRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -43,15 +45,29 @@ class AuthControllerTests {
     }
 
     @Test
+    void registerReturnsUsableToken() throws Exception {
+        String body = mvc.perform(post("/auth/register").contentType(MediaType.APPLICATION_JSON).content(CREDENTIALS))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.access_token").isNotEmpty())
+                .andExpect(jsonPath("$.refresh_token").isNotEmpty())
+                .andReturn().getResponse().getContentAsString();
+        String token = body.replaceAll(".*\"access_token\"\\s*:\\s*\"([^\"]+)\".*", "$1");
+
+        mvc.perform(post("/auth/logout").header("Authorization", "Bearer " + token))
+                .andExpect(status().isNoContent());
+    }
+
+    @Test
     void registerLoginLogout() throws Exception {
         mvc.perform(post("/auth/register").contentType(MediaType.APPLICATION_JSON).content(CREDENTIALS))
                 .andExpect(status().isCreated());
 
         MvcResult login = mvc.perform(post("/auth/login").contentType(MediaType.APPLICATION_JSON).content(CREDENTIALS))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.token").isNotEmpty())
+                .andExpect(jsonPath("$.access_token").isNotEmpty())
+                .andExpect(jsonPath("$.refresh_token").isNotEmpty())
                 .andReturn();
-        String token = login.getResponse().getContentAsString().replaceAll(".*\"token\"\\s*:\\s*\"([^\"]+)\".*", "$1");
+        String token = login.getResponse().getContentAsString().replaceAll(".*\"access_token\"\\s*:\\s*\"([^\"]+)\".*", "$1");
 
         mvc.perform(post("/auth/logout").header("Authorization", "Bearer " + token))
                 .andExpect(status().isNoContent());
@@ -127,6 +143,39 @@ class AuthControllerTests {
                 .andExpect(status().isCreated());
         jdbc.update("update users set status = 'DELETED' where email = 'anton@example.com'");
         mvc.perform(post("/auth/login").contentType(MediaType.APPLICATION_JSON).content(CREDENTIALS))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void loginReturnsJwtWithUserIdAndEmail() throws Exception {
+        mvc.perform(post("/auth/register").contentType(MediaType.APPLICATION_JSON).content(CREDENTIALS))
+                .andExpect(status().isCreated());
+        String body = mvc.perform(post("/auth/login").contentType(MediaType.APPLICATION_JSON).content(CREDENTIALS))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        String token = body.replaceAll(".*\"access_token\"\\s*:\\s*\"([^\"]+)\".*", "$1");
+
+        String[] parts = token.split("\\.");
+        assertThat(parts).hasSize(3);
+        String payload = new String(Base64.getUrlDecoder().decode(parts[1]));
+        Long userId = userRepository.findByEmail("anton@example.com").orElseThrow().getId();
+        assertThat(payload).contains("\"sub\":\"" + userId + "\"", "\"email\":\"anton@example.com\"", "\"typ\":\"access\"", "\"exp\":");
+    }
+
+    @Test
+    void refreshTokenCannotBeUsedAsAccessToken() throws Exception {
+        String body = mvc.perform(post("/auth/register").contentType(MediaType.APPLICATION_JSON).content(CREDENTIALS))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        String refreshToken = body.replaceAll(".*\"refresh_token\"\\s*:\\s*\"([^\"]+)\".*", "$1");
+
+        mvc.perform(post("/auth/logout").header("Authorization", "Bearer " + refreshToken))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void logoutWithForgedTokenReturnsUnauthorized() throws Exception {
+        mvc.perform(post("/auth/logout").header("Authorization", "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.forged"))
                 .andExpect(status().isUnauthorized());
     }
 

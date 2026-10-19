@@ -1,1 +1,27 @@
 GET http://localhost:8080/hello
+
+### Register: returns access_token and refresh_token right away
+POST {{local}}/register
+Content-Type: application/json
+
+{
+  "email": "anton.zeltser@gmail.com",
+  "password": "123456"
+}
+
+> {% client.global.set("token", response.body.access_token); client.global.set("refresh_token", response.body.refresh_token); %}
+
+### Login
+POST {{local}}/login
+Content-Type: application/json
+
+{
+  "email": "anton.zeltser@gmail.com",
+  "password": "123456"
+}
+
+> {% client.global.set("token", response.body.access_token); client.global.set("refresh_token", response.body.refresh_token); %}
+
+### Logout: revokes the token from the last register/login
+POST {{local}}/logout
+Authorization: Bearer {{token}}

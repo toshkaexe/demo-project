@@ -1,17 +1,13 @@
 package demo.lavka.auth;
 
-import java.security.SecureRandom;
-import java.util.Base64;
 import java.util.Locale;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 import demo.lavka.entity.User;
 import demo.lavka.entity.UserStatus;
+import demo.lavka.model.TokenPair;
 import demo.lavka.repository.UserRepository;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
-import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -21,33 +17,38 @@ import org.springframework.web.server.ResponseStatusException;
 @Service
 public class AuthService {
 
-    private final PasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
-    private final SecureRandom random = new SecureRandom();
-
     private final UserRepository userRepository;
+    private final PasswordEncoder passwordEncoder;
+    private final JWTService jwtService;
 
-    // token -> user id; tokens live only in memory, a restart logs everyone out
-    private final Map<String, Long> tokens = new ConcurrentHashMap<>();
-
-    public AuthService(UserRepository userRepository) {
+    public AuthService(UserRepository userRepository, PasswordEncoder passwordEncoder, JWTService jwtService) {
         this.userRepository = userRepository;
+        this.passwordEncoder = passwordEncoder;
+        this.jwtService = jwtService;
     }
 
     @Transactional
-    public void register(String email, String password) {
+    /**
+     * Creates the user and logs them in right away.
+     *
+     * @return access and refresh tokens for the new user
+     */
+    public TokenPair register(String email, String password) {
         String normalized = normalize(email);
         if (userRepository.existsByEmail(normalized)) {
             throw userAlreadyExists();
         }
+        User user;
         try {
-            userRepository.saveAndFlush(new User(normalized, passwordEncoder.encode(password)));
+            user = userRepository.saveAndFlush(new User(normalized, passwordEncoder.encode(password)));
         } catch (DataIntegrityViolationException e) {
             // concurrent registration with the same email hit the unique constraint
             throw userAlreadyExists();
         }
+        return jwtService.issueTokens(user.getId(), user.getEmail());
     }
 
-    public String login(String email, String password) {
+    public TokenPair login(String email, String password) {
         User user = userRepository.findByEmail(normalize(email))
                 // deleted users are treated as non-existent
                 .filter(u -> u.getStatus() != UserStatus.DELETED)
@@ -56,13 +57,11 @@ public class AuthService {
         if (user.getStatus() == UserStatus.BLOCKED) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "User is blocked");
         }
-        String token = newToken();
-        tokens.put(token, user.getId());
-        return token;
+        return jwtService.issueTokens(user.getId(), user.getEmail());
     }
 
     public void logout(String token) {
-        if (tokens.remove(token) == null) {
+        if (!jwtService.revokeSession(token)) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid token");
         }
     }
@@ -74,12 +73,6 @@ public class AuthService {
 
     private static ResponseStatusException userAlreadyExists() {
         return new ResponseStatusException(HttpStatus.CONFLICT, "User already exists");
-    }
-
-    private String newToken() {
-        byte[] bytes = new byte[32];
-        random.nextBytes(bytes);
-        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
     }
 
 }

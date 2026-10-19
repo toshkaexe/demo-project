@@ -1,5 +1,6 @@
 package demo.lavka.auth;
 
+import demo.lavka.model.TokenPair;
 import demo.lavka.model.UserCredentials;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpHeaders;
@@ -26,13 +27,13 @@ public class AuthController {
 
     @PostMapping("/register")
     @ResponseStatus(HttpStatus.CREATED)
-    public void register(@Valid @RequestBody UserCredentials userCredentials) {
-        authService.register(userCredentials.email(), userCredentials.password());
+    public TokenPair register(@Valid @RequestBody UserCredentials userCredentials) {
+        return authService.register(userCredentials.email(), userCredentials.password());
     }
 
     @PostMapping("/login")
-    public TokenResponse login(@Valid @RequestBody UserCredentials userCredentials) {
-        return new TokenResponse(authService.login(userCredentials.email(), userCredentials.password()));
+    public TokenPair login(@Valid @RequestBody UserCredentials userCredentials) {
+        return authService.login(userCredentials.email(), userCredentials.password());
     }
 
     @PostMapping("/logout")
@@ -42,9 +43,6 @@ public class AuthController {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Missing bearer token");
         }
         authService.logout(authorization.substring(BEARER_PREFIX.length()));
-    }
-
-    public record TokenResponse(String token) {
     }
 
 }

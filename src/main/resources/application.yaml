@@ -1,6 +1,9 @@
 spring:
   application:
     name: lavka
+  config:
+    # local secrets (JWT_SECRET, ...) from .env in the working directory
+    import: optional:file:.env[.properties]
   datasource:
     url: jdbc:postgresql://localhost:5432/lavka
     username: lavka
@@ -12,3 +15,12 @@ spring:
       ddl-auto: validate
   liquibase:
     change-log: classpath:db/changelog/db.changelog-master.yaml
+
+auth:
+  jwt:
+    # HMAC signing key, at least 32 bytes; comes from .env or the JWT_SECRET env variable
+    secret: ${JWT_SECRET}
+    # short-lived, sent with every request
+    access-ttl: 15m
+    # long-lived, only used to get a new token pair
+    refresh-ttl: 30d

@@ -2,7 +2,6 @@ package demo.lavka.entity;
 
 import java.time.Instant;
 
-import com.fasterxml.jackson.annotation.JsonAnyGetter;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -11,7 +10,6 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
-import org.jspecify.annotations.Nullable;
 
 @Entity
 @Table(name = "users")
@@ -40,11 +38,15 @@ public class User {
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
-    public User(String normalized, @Nullable String encode) {
+    protected User() {
+        // for JPA
     }
 
-    public User() {
-
+    public User(String email, String passwordHash) {
+        this.email = email;
+        this.passwordHash = passwordHash;
+        this.status = UserStatus.PENDING;
+        this.createdAt = Instant.now();
     }
 
     public UserStatus getStatus() {
@@ -55,7 +57,12 @@ public class User {
         return id;
     }
 
-    public @Nullable String getPasswordHash() {
+    public String getEmail() {
+        return email;
+    }
+
+    public String getPasswordHash() {
         return passwordHash;
     }
+
 }
