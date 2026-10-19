@@ -1,5 +1,6 @@
 package demo.lavka.auth;
 
+import demo.lavka.model.UserCredentials;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -25,13 +26,13 @@ public class AuthController {
 
     @PostMapping("/register")
     @ResponseStatus(HttpStatus.CREATED)
-    public void register(@Valid @RequestBody Credentials credentials) {
-        authService.register(credentials.email(), credentials.password());
+    public void register(@Valid @RequestBody UserCredentials userCredentials) {
+        authService.register(userCredentials.email(), userCredentials.password());
     }
 
     @PostMapping("/login")
-    public TokenResponse login(@Valid @RequestBody Credentials credentials) {
-        return new TokenResponse(authService.login(credentials.email(), credentials.password()));
+    public TokenResponse login(@Valid @RequestBody UserCredentials userCredentials) {
+        return new TokenResponse(authService.login(userCredentials.email(), userCredentials.password()));
     }
 
     @PostMapping("/logout")
