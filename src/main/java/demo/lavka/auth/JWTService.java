@@ -10,7 +10,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import javax.crypto.SecretKey;
 
-import demo.lavka.config.JwtProperties;
+import demo.lavka.config.JwtConfig;
 import demo.lavka.model.TokenPair;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.JwtException;
@@ -30,7 +30,7 @@ import org.springframework.stereotype.Service;
  * refresh token would expire. A restart clears the denylist.
  */
 @Service
-@EnableConfigurationProperties(JwtProperties.class)
+@EnableConfigurationProperties(JwtConfig.class)
 public class JWTService {
 
     static final String TYPE_CLAIM = "typ";
@@ -41,13 +41,13 @@ public class JWTService {
     private static final int MIN_SECRET_BYTES = 32;
 
     private final SecretKey key;
-    private final JwtProperties properties;
+    private final JwtConfig properties;
     private final JwtParser parser;
 
     // revoked session id -> when its refresh token expires
     private final Map<String, Instant> revokedSessions = new ConcurrentHashMap<>();
 
-    public JWTService(JwtProperties properties) {
+    public JWTService(JwtConfig properties) {
         String secret = properties.secret();
         if (secret == null || secret.isBlank() || secret.startsWith("${")
                 || secret.getBytes(StandardCharsets.UTF_8).length < MIN_SECRET_BYTES) {

@@ -1,18 +1,23 @@
-GET http://localhost:8080/hello
+GET {{local}}/hello
 
 ### Register: returns access_token and refresh_token right away
-POST {{local}}/register
+POST {{local}}/auth/register
 Content-Type: application/json
 
 {
-  "email": "anton.zeltser@gmail.com",
+  "email": "aentoneeeeee.zeltser@gmail.com",
   "password": "123456"
 }
 
-> {% client.global.set("token", response.body.access_token); client.global.set("refresh_token", response.body.refresh_token); %}
+> {%
+    client.global.set("access_token", response.body.access_token);
+    client.global.set("refresh_token", response.body.refresh_token);
+    client.log("access_token:  " + response.body.access_token);
+    client.log("refresh_token: " + response.body.refresh_token);
+%}
 
 ### Login
-POST {{local}}/login
+POST {{local}}/auth/login
 Content-Type: application/json
 
 {
@@ -20,8 +25,13 @@ Content-Type: application/json
   "password": "123456"
 }
 
-> {% client.global.set("token", response.body.access_token); client.global.set("refresh_token", response.body.refresh_token); %}
+> {%
+    client.global.set("access_token", response.body.access_token);
+    client.global.set("refresh_token", response.body.refresh_token);
+    client.log("access_token:  " + response.body.access_token);
+    client.log("refresh_token: " + response.body.refresh_token);
+%}
 
-### Logout: revokes the token from the last register/login
-POST {{local}}/logout
-Authorization: Bearer {{token}}
+### Logout: revokes the session of the last register/login
+POST {{local}}/auth/logout
+Authorization: Bearer {{access_token}}

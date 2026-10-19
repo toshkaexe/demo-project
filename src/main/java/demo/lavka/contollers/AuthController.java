@@ -1,5 +1,6 @@
-package demo.lavka.auth;
+package demo.lavka.contollers;
 
+import demo.lavka.auth.AuthService;
 import demo.lavka.model.TokenPair;
 import demo.lavka.model.UserCredentials;
 import jakarta.validation.Valid;
