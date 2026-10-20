@@ -1,3 +1,10 @@
 spring:
   application:
     name: lavka
+  datasource:
+    url: jdbc:postgresql://localhost:5432/lavka
+    username: lavka
+    password: lavka
+  liquibase:
+    # schema is managed by Liquibase
+    change-log: classpath:db/changelog/db.changelog-master.yaml
