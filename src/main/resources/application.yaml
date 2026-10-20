@@ -1,10 +1,30 @@
 spring:
   application:
     name: lavka
+  config:
+    # local secrets (JWT_SECRET) from .env in the working directory
+    import: optional:file:.env[.properties]
   datasource:
     url: jdbc:postgresql://localhost:5432/lavka
     username: lavka
     password: lavka
+  jpa:
+    open-in-view: false
+    hibernate:
+      # schema is managed by Liquibase, Hibernate only checks that entities match it
+      ddl-auto: validate
   liquibase:
-    # schema is managed by Liquibase
     change-log: classpath:db/changelog/db.changelog-master.yaml
+  web:
+    error:
+      # show the reason ("Invalid email or password", ...) in error responses
+      include-message: always
+
+auth:
+  jwt:
+    # HMAC signing key, at least 32 bytes; comes from .env or the JWT_SECRET env variable
+    secret: ${JWT_SECRET}
+    # short-lived, sent with every request
+    access-ttl: 15m
+    # long-lived, only used to get a new token pair
+    refresh-ttl: 30d
