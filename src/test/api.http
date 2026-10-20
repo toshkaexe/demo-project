@@ -1,0 +1,45 @@
+### 1. Register: creates the user and returns a token pair
+POST http://localhost:8080/auth/register
+Content-Type: application/json
+
+{
+  "email": "anton.zeltser11@gmail.com",
+  "password": "123456"
+}
+
+
+### 2. Login (email only)
+POST http://localhost:8080/auth/login
+Content-Type: application/json
+
+{
+  "email": "anton.zeltser11@gmail.com",
+  "password": "123456"
+}
+
+
+### 3. Current user: no body, access token in the header
+GET http://localhost:8080/users/me
+Authorization: Bearer {{access_token}}
+
+### 4. New access + refresh pair by refresh token (the old refresh token stops working)
+POST http://localhost:8080/auth/refresh
+Content-Type: application/json
+
+{
+  "refresh_token": "{{refresh_token}}"
+}
+
+> {%
+    client.global.set("access_token", response.body.access_token);
+    client.global.set("refresh_token", response.body.refresh_token);
+%}
+
+### 5. Logout: revokes both tokens
+POST http://localhost:8080/auth/logout
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "refresh_token": "{{refresh_token}}"
+}
