@@ -5,6 +5,7 @@ import java.time.Duration;
 import java.util.Base64;
 import java.util.Date;
 
+import demo.lavka.auth.InvalidTokenException.Reason;
 import demo.lavka.config.JwtConfig;
 import demo.lavka.model.TokenPair;
 import io.jsonwebtoken.Jwts;
@@ -13,6 +14,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @DisplayName("JWTService: проверка подписи и срока токена")
 class JWTServiceTest {
@@ -27,9 +29,8 @@ class JWTServiceTest {
     void acceptsTokenSignedWithOurKey() {
         TokenPair tokens = jwtService.issueTokens(42L);
 
-        assertThat(jwtService.verifyAccess(tokens.accessToken()))
-                .hasValueSatisfying(token -> assertThat(token.userId()).isEqualTo(42L));
-        assertThat(jwtService.verifyRefresh(tokens.refreshToken())).isPresent();
+        assertThat(jwtService.validateToken(tokens.accessToken(), TokenType.ACCESS).userId()).isEqualTo(42L);
+        assertThat(jwtService.validateToken(tokens.refreshToken(), TokenType.REFRESH).userId()).isEqualTo(42L);
     }
 
     @Test
@@ -44,7 +45,7 @@ class JWTServiceTest {
         assertThat(forgedPayload).isNotEqualTo(payload);
         String forged = parts[0] + "." + base64Url(forgedPayload) + "." + parts[2];
 
-        assertThat(jwtService.verifyAccess(forged)).isEmpty();
+        assertRejected(forged, TokenType.ACCESS, Reason.BAD_SIGNATURE);
     }
 
     @Test
@@ -55,7 +56,7 @@ class JWTServiceTest {
         char last = parts[2].charAt(0);
         String forged = parts[0] + "." + parts[1] + "." + (last == 'A' ? 'B' : 'A') + parts[2].substring(1);
 
-        assertThat(jwtService.verifyAccess(forged)).isEmpty();
+        assertRejected(forged, TokenType.ACCESS, Reason.BAD_SIGNATURE);
     }
 
     @Test
@@ -68,7 +69,7 @@ class JWTServiceTest {
                 .signWith(Keys.hmacShaKeyFor("some-other-secret-0123456789abcdefghij".getBytes(StandardCharsets.UTF_8)))
                 .compact();
 
-        assertThat(jwtService.verifyAccess(foreign)).isEmpty();
+        assertRejected(foreign, TokenType.ACCESS, Reason.BAD_SIGNATURE);
     }
 
 
@@ -79,7 +80,7 @@ class JWTServiceTest {
         String unsigned = base64Url("{\"alg\":\"none\"}") + "."
                 + base64Url("{\"sub\":\"42\",\"typ\":\"access\",\"exp\":" + (System.currentTimeMillis() / 1000 + 60) + "}") + ".";
 
-        assertThat(jwtService.verifyAccess(unsigned)).isEmpty();
+        assertRejected(unsigned, TokenType.ACCESS, Reason.MALFORMED);
     }
 
     @Test
@@ -88,8 +89,50 @@ class JWTServiceTest {
         JWTService expiring = new JWTService(new JwtConfig(SECRET, Duration.ofSeconds(-1), Duration.ofSeconds(-1)));
         TokenPair tokens = expiring.issueTokens(42L);
 
-        assertThat(jwtService.verifyAccess(tokens.accessToken())).isEmpty();
-        assertThat(jwtService.verifyRefresh(tokens.refreshToken())).isEmpty();
+        assertRejected(tokens.accessToken(), TokenType.ACCESS, Reason.EXPIRED);
+        assertRejected(tokens.refreshToken(), TokenType.REFRESH, Reason.EXPIRED);
+        assertThatThrownBy(() -> jwtService.validateToken(tokens.accessToken(), TokenType.ACCESS))
+                .hasMessage("Token expired");
+    }
+
+    /**
+     * A refresh token must not open {@code /users/me}, and an access token must not be exchanged
+     * for a new pair: the {@code typ} claim tells them apart.
+     */
+    @Test
+    @DisplayName("Токен не того типа (refresh вместо access и наоборот) отклоняется")
+    void rejectsTokenOfWrongType() {
+        TokenPair tokens = jwtService.issueTokens(42L);
+
+        assertRejected(tokens.refreshToken(), TokenType.ACCESS, Reason.WRONG_TYPE);
+        assertRejected(tokens.accessToken(), TokenType.REFRESH, Reason.WRONG_TYPE);
+    }
+
+    /**
+     * After logout (or after a refresh token was exchanged) the token is still correctly signed
+     * and not expired, but must not be accepted anymore.
+     */
+    @Test
+    @DisplayName("Отозванный токен отклоняется, хотя подпись и срок в порядке")
+    void rejectsRevokedToken() {
+        String token = jwtService.issueTokens(42L).accessToken();
+        jwtService.revoke(jwtService.validateToken(token, TokenType.ACCESS));
+
+        assertRejected(token, TokenType.ACCESS, Reason.REVOKED);
+    }
+
+    @Test
+    @DisplayName("Мусор вместо токена отклоняется")
+    void rejectsGarbage() {
+        assertRejected("garbage", TokenType.ACCESS, Reason.MALFORMED);
+        assertRejected("", TokenType.ACCESS, Reason.MALFORMED);
+    }
+
+    private void assertRejected(String token, TokenType type, Reason reason) {
+        assertThatThrownBy(() -> jwtService.validateToken(token, type))
+                .isInstanceOf(InvalidTokenException.class)
+                .extracting(e -> ((InvalidTokenException) e).getReason())
+                .isEqualTo(reason);
     }
 
     private static String base64Url(String json) {

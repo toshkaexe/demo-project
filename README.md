@@ -8,7 +8,7 @@
 
 ```bash
 cp .env.example .env              # затем вставить ключ: openssl rand -base64 48
-docker compose up -d              # Postgres на localhost:5432
+docker compose up -d              # Postgres на localhost:5432, Keycloak на http://localhost:8081 (admin/admin)
 ./mvnw spring-boot:run            # приложение на http://localhost:8080
 ```
 
@@ -37,6 +37,13 @@ docker compose up -d              # Postgres на localhost:5432
 
 - Оба токена — JWT, подписанные ключом из `.env`. Подделать их нельзя, но прочитать содержимое может кто угодно. Поэтому в токен не кладём ничего секретного.
 - Поле `typ` не даёт использовать refresh-токен вместо access-токена и наоборот.
+- Все проверки токена собраны в одном методе `JWTService.validateToken(token, expectedType)`. Он проверяет по порядку:
+  1. **подпись**: jjwt пересчитывает HMAC от `header.payload` нашим ключом и сравнивает с подписью токена;
+  2. **срок**: `exp` не в прошлом;
+  3. **тип**: `typ` совпадает с ожидаемым (`access` или `refresh`);
+  4. **отзыв**: токен не отозван через logout или refresh.
+
+  На первой же неудаче метод бросает `InvalidTokenException` с причиной (`BAD_SIGNATURE`, `EXPIRED`, `WRONG_TYPE`, `REVOKED`, `MALFORMED`), и клиент получает `401`.
 - Отозванные токены (после выхода или обмена refresh-токена) хранятся в памяти приложения до окончания своего срока. **После перезапуска приложения этот список очищается.**
 
 ## Таблица `users`
@@ -143,7 +150,7 @@ Content-Type: application/json
 |---|---|
 | `204` | выход выполнен |
 | `400` | в теле нет `refresh_token` |
-| `401` | `Missing bearer token`, `Invalid access token` или `Invalid refresh token`: заголовка нет, токен недействителен, уже отозван или refresh-токен принадлежит другому пользователю |
+| `401` | `Missing bearer token`: нет заголовка. `Token expired`: истёк срок токена. `Invalid token`: токен подделан, отозван или не того типа. `Refresh token belongs to another user`: refresh-токен другого пользователя |
 
 ### Текущий пользователь — `GET /users/me`
 
@@ -175,7 +182,7 @@ Authorization: Bearer <access_token>
 | Код | Когда |
 |---|---|
 | `200` | данные пользователя |
-| `401` | `Missing bearer token` или `Invalid access token`: заголовка нет, токен истёк, отозван, передан refresh-токен вместо access или пользователь удалён |
+| `401` | `Missing bearer token`: нет заголовка. `Token expired`: access-токен истёк, пора вызвать `/auth/refresh`. `Invalid token`: токен подделан, отозван или передан refresh вместо access. `User not found`: пользователь удалён |
 
 ### Обновление пары — `POST /auth/refresh`
 
@@ -192,7 +199,7 @@ Content-Type: application/json
 
 - Возвращает `200` и новую пару `{ "access_token", "refresh_token" }`.
 - Старый refresh-токен сразу отзывается: каждый refresh-токен можно использовать только один раз.
-- Возвращает `401`, если токен недействителен, уже использован или вместо refresh передан access-токен.
+- Возвращает `401`: `Token expired`, если refresh-токен истёк (нужен новый логин), или `Invalid token`, если он подделан, уже использован или вместо refresh передан access-токен.
 
 ## Типичный сценарий
 

@@ -56,11 +56,11 @@ public class AuthService {
      * Revokes both tokens of the pair.
      */
     public void logout(String accessToken, String refreshToken) {
-        VerifiedToken access = jwtService.verifyAccess(accessToken)
-                .orElseThrow(() -> unauthorized("Invalid access token"));
-        VerifiedToken refresh = jwtService.verifyRefresh(refreshToken)
-                .filter(token -> token.userId().equals(access.userId()))
-                .orElseThrow(() -> unauthorized("Invalid refresh token"));
+        VerifiedToken access = jwtService.validateToken(accessToken, TokenType.ACCESS);
+        VerifiedToken refresh = jwtService.validateToken(refreshToken, TokenType.REFRESH);
+        if (!refresh.userId().equals(access.userId())) {
+            throw unauthorized("Refresh token belongs to another user");
+        }
         jwtService.revoke(access);
         jwtService.revoke(refresh);
     }
@@ -69,11 +69,10 @@ public class AuthService {
      * Exchanges a refresh token for a new pair. The old refresh token can't be used again.
      */
     public TokenPair refresh(String refreshToken) {
-        VerifiedToken refresh = jwtService.verifyRefresh(refreshToken)
-                .orElseThrow(() -> unauthorized("Invalid refresh token"));
+        VerifiedToken refresh = jwtService.validateToken(refreshToken, TokenType.REFRESH);
         // revoke first: if two requests race with the same token, only one gets a new pair
         if (!jwtService.revoke(refresh)) {
-            throw unauthorized("Invalid refresh token");
+            throw new InvalidTokenException(InvalidTokenException.Reason.REVOKED);
         }
         if (!userRepository.existsById(refresh.userId())) {
             throw unauthorized("User not found");
@@ -85,9 +84,9 @@ public class AuthService {
      * @return the user the access token belongs to
      */
     public User authenticate(String accessToken) {
-        return jwtService.verifyAccess(accessToken)
-                .flatMap(token -> userRepository.findById(token.userId()))
-                .orElseThrow(() -> unauthorized("Invalid access token"));
+        VerifiedToken access = jwtService.validateToken(accessToken, TokenType.ACCESS);
+        return userRepository.findById(access.userId())
+                .orElseThrow(() -> unauthorized("User not found"));
     }
 
     // emails are case-insensitive: Anton@Mail.com and anton@mail.com are the same user
