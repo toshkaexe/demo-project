@@ -34,18 +34,13 @@ jobs:
           distribution: 'temurin'
           cache: 'maven'
 
-      # 3. Сборка: компилируем код и тесты, тесты пока не запускаем.
-      #    Если не компилируется, падаем здесь, не дожидаясь тестов
-      - name: Build
-        run: ./mvnw -B -ntp clean test-compile
-
-      # 4. Все тесты и jar. Классы уже скомпилированы на шаге Build, Maven их не пересобирает.
+      # 3. Сборка и все тесты одной командой: verify компилирует код и тесты, запускает тесты и собирает jar.
       #    Testcontainers сам поднимает Postgres в Docker, он на ubuntu-latest уже есть.
       #    JWT_SECRET не нужен: тесты берут его из application-test.yaml
-      - name: Test
+      - name: Build and test
         run: ./mvnw -B -ntp verify
 
-      # 5. Если тесты упали, отчёты можно скачать со страницы запуска
+      # 4. Если тесты упали, отчёты можно скачать со страницы запуска
       #    (surefire-reports, а если появятся интеграционные тесты, то и failsafe-reports)
       - name: Upload test reports
         if: failure()
