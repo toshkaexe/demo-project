@@ -1,7 +1,7 @@
 --liquibase formatted sql
 
 --changeset anton:002-create-products-table
-CREATE TABLE products  NOT EXISTS
+CREATE TABLE IF NOT EXISTS products
 (
     id       SERIAL PRIMARY KEY,
     name     VARCHAR(255)   NOT NULL,

@@ -1,24 +1,4 @@
-#!/bin/bash
-# Fills the products table in the local Postgres from docker-compose.
-# There is no products API yet, so rows go straight into the database through psql in the container.
-# Safe to run again: a product whose name already exists is skipped.
 
-set -euo pipefail
-
-CONTAINER="lavka-postgres"
-PSQL=(docker exec -i "$CONTAINER" psql -U lavka -d lavka -v ON_ERROR_STOP=1 -q)
-
-if ! docker ps --format '{{.Names}}' | grep -qx "$CONTAINER"; then
-    echo "Container $CONTAINER is not running: start it with 'docker compose up -d'" >&2
-    exit 1
-fi
-
-if [ "$("${PSQL[@]}" -tAc "select to_regclass('public.products') is not null")" != "t" ]; then
-    echo "Table products doesn't exist yet: start the application once so Liquibase creates it" >&2
-    exit 1
-fi
-
-"${PSQL[@]}" <<'SQL'
 INSERT INTO products (name, quantity, price)
 SELECT v.name, v.quantity, v.price
 FROM (VALUES
@@ -46,7 +26,3 @@ FROM (VALUES
     ('Мороженое пломбир, 80 г',           0,  69.00)
 ) AS v(name, quantity, price)
 WHERE NOT EXISTS (SELECT 1 FROM products p WHERE p.name = v.name);
-SQL
-
-echo "Products in the table:"
-"${PSQL[@]}" -c "select id, name, quantity, price from products order by id"

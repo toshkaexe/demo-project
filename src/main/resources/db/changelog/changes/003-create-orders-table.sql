@@ -1,7 +1,7 @@
 --liquibase formatted sql
 
 --changeset anton:003-create-orders-table
-CREATE TABLE orders
+CREATE TABLE IF NOT EXISTS orders
 (
     id           BIGSERIAL PRIMARY KEY,
     -- RESTRICT: a user with orders can't be deleted, the order history must not disappear
