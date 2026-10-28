@@ -20,15 +20,14 @@ Content-Type: application/json
 
 ### 3. Current user: no body, access token in the header
 GET http://localhost:8080/users/me
-Authorization: Bearer eyJhbGciOiJIUzUxMiJ9.eyJqdGkiOiI2NzY5OGY4ZC1lN2JhLTRlNzctOThmNS1kNDdmZjA2M2NiM2QiLCJzdWIiOiI3IiwidHlwIjoiYWNjZXNzIiwiaWF0IjoxNzkyODMyODkwLCJleHAiOjE3OTI4MzM3OTB9.yiNYpkSavMhZ4LwO3GTA1BBuboL6yQJO1-LhzrvZSU79SHp1dbNBf3x4NSbLdgWNx2uFxItyPreeLOv7JPrQWQ
-
+Authorization: Bearer
 
 ### 4. New access + refresh pair by refresh token (the old refresh token stops working)
 POST http://localhost:8080/auth/refresh
 Content-Type: application/json
 
 {
-  "refresh_token": "eyJhbGciOiJIUzUxMiJ9.eyJqdGkiOiI5YzA5NzgyNS1iYTI2LTQ3ODctOTgzYS0zNTUzZjJjYjMwZGYiLCJzdWIiOiI3IiwidHlwIjoicmVmcmVzaCIsImlhdCI6MTc5MjgzMjg5MCwiZXhwIjoxNzk1NDI0ODkwfQ.s-u6aQblYwV0tXmSg729LPyxcM_ka_MMNeVuiQeTDgU3FvjrTOr7xKHPh9YFvf5IDoYuPXbb7JM48Zjc1kPAsg"
+  "refresh_token": ""
 }
 
 
