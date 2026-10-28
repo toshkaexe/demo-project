@@ -1,7 +1,11 @@
 package demo.lavka.controller;
 
+import java.time.Duration;
+
 import com.jayway.jsonpath.JsonPath;
 import demo.lavka.TestcontainersConfiguration;
+import demo.lavka.auth.JWTService;
+import demo.lavka.config.JwtConfig;
 import demo.lavka.model.TokenPair;
 import demo.lavka.repository.UserRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -39,6 +43,8 @@ class AuthControllerTest {
     private UserRepository userRepository;
     @Autowired
     private JdbcTemplate jdbc;
+    @Autowired
+    private JwtConfig jwtConfig;
 
     private MockMvc mvc;
 
@@ -174,6 +180,20 @@ class AuthControllerTest {
         me(tokens.accessToken()).andExpect(status().isUnauthorized());
         refresh(tokens.refreshToken()).andExpect(status().isUnauthorized());
         logout(tokens.accessToken(), tokens.refreshToken()).andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void logoutWithExpiredAccessTokenStillRevokesRefreshToken() throws Exception {
+        register(EMAIL, PASSWORD);
+        Long id = userRepository.findByEmail(EMAIL).orElseThrow().getId();
+        // same key as the app, but the access token is born expired
+        TokenPair tokens = new JWTService(new JwtConfig(jwtConfig.secret(), Duration.ofSeconds(-1), jwtConfig.refreshTtl()))
+                .issueTokens(id);
+        me(tokens.accessToken()).andExpect(status().isUnauthorized());
+
+        logout(tokens.accessToken(), tokens.refreshToken()).andExpect(status().isNoContent());
+
+        refresh(tokens.refreshToken()).andExpect(status().isUnauthorized());
     }
 
     @Test

@@ -95,6 +95,23 @@ class JWTServiceTest {
                 .hasMessage("Token expired");
     }
 
+    @Test
+    @DisplayName("Для logout истёкший токен принимается, но подпись по-прежнему проверяется")
+    void ignoringExpiryStillChecksSignature() {
+        JWTService expiring = new JWTService(new JwtConfig(SECRET, Duration.ofSeconds(-1), Duration.ofSeconds(-1)));
+        String expired = expiring.issueTokens(42L).accessToken();
+
+        assertThat(jwtService.validateTokenIgnoringExpiry(expired, TokenType.ACCESS).userId()).isEqualTo(42L);
+
+        String[] parts = expired.split("\\.");
+        String forged = parts[0] + "." + base64Url(new String(Base64.getUrlDecoder().decode(parts[1]), StandardCharsets.UTF_8)
+                .replace("\"sub\":\"42\"", "\"sub\":\"1\"")) + "." + parts[2];
+        assertThatThrownBy(() -> jwtService.validateTokenIgnoringExpiry(forged, TokenType.ACCESS))
+                .isInstanceOf(InvalidTokenException.class)
+                .extracting(e -> ((InvalidTokenException) e).getReason())
+                .isEqualTo(Reason.BAD_SIGNATURE);
+    }
+
     /**
      * A refresh token must not open {@code /users/me}, and an access token must not be exchanged
      * for a new pair: the {@code typ} claim tells them apart.

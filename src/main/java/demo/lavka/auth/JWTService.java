@@ -78,7 +78,19 @@ public class JWTService {
      * @throws InvalidTokenException with the reason of the first failed check
      */
     public VerifiedToken validateToken(String token, TokenType expectedType) {
-        Claims claims = parseSigned(token);
+        return validate(token, expectedType, false);
+    }
+
+    /**
+     * Same checks as {@link #validateToken}, except that an expired token is accepted.
+     * Only for logout: the client may still hold an access token that ran out minutes ago.
+     */
+    public VerifiedToken validateTokenIgnoringExpiry(String token, TokenType expectedType) {
+        return validate(token, expectedType, true);
+    }
+
+    private VerifiedToken validate(String token, TokenType expectedType, boolean allowExpired) {
+        Claims claims = parseSigned(token, allowExpired);
 
         if (!expectedType.claimValue().equals(claims.get(TYPE_CLAIM, String.class))) {
             throw new InvalidTokenException(Reason.WRONG_TYPE);
@@ -114,12 +126,16 @@ public class JWTService {
      * jjwt recomputes the HMAC of {@code header.payload} with our key and compares it with the token's
      * signature, then checks {@code exp}. Unsigned tokens are rejected.
      */
-    private Claims parseSigned(String token) {
+    private Claims parseSigned(String token, boolean allowExpired) {
         try {
             return parser.parseSignedClaims(token).getPayload();
         } catch (SignatureException e) {
             throw new InvalidTokenException(Reason.BAD_SIGNATURE);
         } catch (ExpiredJwtException e) {
+            // jjwt checks exp only after the signature, so these claims are trusted
+            if (allowExpired) {
+                return e.getClaims();
+            }
             throw new InvalidTokenException(Reason.EXPIRED);
         } catch (JwtException | IllegalArgumentException e) {
             throw new InvalidTokenException(Reason.MALFORMED);

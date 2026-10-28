@@ -53,16 +53,18 @@ public class AuthService {
     }
 
     /**
-     * Revokes both tokens of the pair.
+     * Revokes both tokens of the pair. The access token may already be expired (it lives only 15 minutes),
+     * otherwise a user who logs out later would get 401 and keep a live refresh token.
      */
     public void logout(String accessToken, String refreshToken) {
-        VerifiedToken access = jwtService.validateToken(accessToken, TokenType.ACCESS);
         VerifiedToken refresh = jwtService.validateToken(refreshToken, TokenType.REFRESH);
+        VerifiedToken access = jwtService.validateTokenIgnoringExpiry(accessToken, TokenType.ACCESS);
         if (!refresh.userId().equals(access.userId())) {
             throw unauthorized("Refresh token belongs to another user");
         }
-        jwtService.revoke(access);
+        // the refresh token matters most: it can mint new pairs for 30 days
         jwtService.revoke(refresh);
+        jwtService.revoke(access);
     }
 
     /**
