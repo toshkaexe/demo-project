@@ -7,10 +7,11 @@ on:
   push:
     branches: [ main ]
 
-# новый коммит в тот же PR отменяет предыдущую, уже ненужную проверку
+# новый коммит в тот же PR отменяет предыдущую, уже ненужную проверку.
+# Запуски в main не отменяются: у каждого смерженного коммита должен остаться результат CI
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -33,21 +34,23 @@ jobs:
           distribution: 'temurin'
           cache: 'maven'
 
-      # 3. Сборка: компилируем код и тесты, собираем jar, тесты пока не запускаем.
+      # 3. Сборка: компилируем код и тесты, тесты пока не запускаем.
       #    Если не компилируется, падаем здесь, не дожидаясь тестов
       - name: Build
-        run: ./mvnw -B -ntp clean package -DskipTests
+        run: ./mvnw -B -ntp clean test-compile
 
-      # 4. Все тесты. Testcontainers сам поднимает Postgres в Docker, он на ubuntu-latest уже есть.
+      # 4. Все тесты и jar. Классы уже скомпилированы на шаге Build, Maven их не пересобирает.
+      #    Testcontainers сам поднимает Postgres в Docker, он на ubuntu-latest уже есть.
       #    JWT_SECRET не нужен: тесты берут его из application-test.yaml
       - name: Test
         run: ./mvnw -B -ntp verify
 
-      # 5. Если тесты упали, отчёты surefire можно скачать со страницы запуска
+      # 5. Если тесты упали, отчёты можно скачать со страницы запуска
+      #    (surefire-reports, а если появятся интеграционные тесты, то и failsafe-reports)
       - name: Upload test reports
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: test-reports
-          path: target/surefire-reports/
+          path: target/*-reports/
           retention-days: 7
