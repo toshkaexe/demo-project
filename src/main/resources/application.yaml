@@ -19,11 +19,6 @@ spring:
     error:
       # show the reason ("Invalid email or password", ...) in error responses
       include-message: always
-  security:
-    oauth2:
-      resourceserver:
-        jwt:
-          issuer-uri: http://localhost:8081/realms/demo
 
 auth:
   jwt:

@@ -53,6 +53,7 @@ class LiquibaseMigrationTests {
                         "id bigint NO",
                         "email character varying NO",
                         "password_hash character varying NO",
+                        "role character varying NO",
                         "created_at timestamp with time zone NO",
                         "updated_at timestamp with time zone NO");
     }
@@ -66,6 +67,7 @@ class LiquibaseMigrationTests {
         assertThat(user.get("id")).isNotNull();
         assertThat(user.get("created_at")).isNotNull();
         assertThat(user.get("updated_at")).isNotNull();
+        assertThat(user.get("role")).isEqualTo("CUSTOMER");
     }
 
     @Test
