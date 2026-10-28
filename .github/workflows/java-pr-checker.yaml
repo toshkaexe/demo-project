@@ -1,20 +1,32 @@
 name: Java PR Checker (Maven)
 
-# Бот запускается при создании PR или новых коммитах в PR в ветку main
+# Запускается на каждый PR в main и после мержа в main
 on:
   pull_request:
     branches: [ main ]
+  push:
+    branches: [ main ]
+
+# новый коммит в тот же PR отменяет предыдущую, уже ненужную проверку.
+# Запуски в main не отменяются: у каждого смерженного коммита должен остаться результат CI
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
 
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       # 1. Скачиваем код репозитория
       - name: Check out repository
         uses: actions/checkout@v4
 
-      # 2. Устанавливаем Java (JDK 21, как в pom.xml)
+      # 2. Устанавливаем Java (JDK 21, как в pom.xml) и кешируем ~/.m2
       - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
@@ -22,6 +34,18 @@ jobs:
           distribution: 'temurin'
           cache: 'maven'
 
-      # 3. Компилируем проект и запускаем тесты
-      - name: Build and Test with Maven
-        run: ./mvnw -B clean verify
+      # 3. Сборка и все тесты одной командой: verify компилирует код и тесты, запускает тесты и собирает jar.
+      #    Testcontainers сам поднимает Postgres в Docker, он на ubuntu-latest уже есть.
+      #    JWT_SECRET не нужен: тесты берут его из application-test.yaml
+      - name: Build and test
+        run: ./mvnw -B -ntp verify
+
+      # 4. Если тесты упали, отчёты можно скачать со страницы запуска
+      #    (surefire-reports, а если появятся интеграционные тесты, то и failsafe-reports)
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: target/*-reports/
+          retention-days: 7
