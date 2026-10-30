@@ -6,6 +6,8 @@ import demo.lavka.auth.JWTService.VerifiedToken;
 import demo.lavka.entity.User;
 import demo.lavka.model.TokenPair;
 import demo.lavka.repository.UserRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -15,6 +17,8 @@ import org.springframework.web.server.ResponseStatusException;
 
 @Service
 public class AuthService {
+
+    private static final Logger log = LoggerFactory.getLogger(AuthService.class);
 
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
@@ -46,9 +50,18 @@ public class AuthService {
     }
 
     public TokenPair login(String email, String password) {
-        User user = userRepository.findByEmail(normalize(email))
-                .filter(u -> passwordEncoder.matches(password, u.getPasswordHash()))
-                .orElseThrow(() -> unauthorized("Invalid email or password"));
+        String normalized = normalize(email);
+        User user = userRepository.findByEmail(normalized).orElse(null);
+        // the client gets the same error in both cases, the log tells them apart
+        if (user == null) {
+            log.warn("Login failed: unknown email {}", normalized);
+            throw unauthorized("Invalid email or password");
+        }
+        if (!passwordEncoder.matches(password, user.getPasswordHash())) {
+            log.warn("Login failed: wrong password for userId={} email={}", user.getId(), normalized);
+            throw unauthorized("Invalid email or password");
+        }
+        log.info("Login succeeded: userId={} email={}", user.getId(), normalized);
         return jwtService.issueTokens(user.getId());
     }
 
