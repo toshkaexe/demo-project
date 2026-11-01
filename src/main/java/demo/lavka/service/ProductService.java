@@ -28,19 +28,19 @@ public class ProductService {
         this.productRepository = productRepository;
     }
 
-
+    @Transactional(readOnly = true)
     public List<ProductResponse> findAll() {
         return productRepository.findAll(Sort.by("id")).stream()
                 .map(ProductResponse::from)
                 .toList();
     }
 
-
+    @Transactional(readOnly = true)
     public ProductResponse findById(Integer id) {
         return ProductResponse.from(getOrThrow(id));
     }
 
-
+    @Transactional
     public ProductResponse create(ProductRequest request) {
         String name = request.name().trim();
         validate(name, request.quantity(), request.price());
@@ -53,7 +53,7 @@ public class ProductService {
         return ProductResponse.from(product);
     }
 
-
+    @Transactional
     public ProductResponse update(Integer id, ProductRequest request) {
         String name = request.name().trim();
         validate(name, request.quantity(), request.price());
@@ -63,11 +63,11 @@ public class ProductService {
         product.setQuantity(request.quantity());
         product.setPrice(request.price());
         log.info("Product updated: id={}", id);
-        // dirty checking writes the changes on commit
+        // no save(): the product is managed inside this transaction, dirty checking writes the changes on commit
         return ProductResponse.from(product);
     }
 
-
+    @Transactional
     public void delete(Integer id) {
         Products product = getOrThrow(id);
         try {
