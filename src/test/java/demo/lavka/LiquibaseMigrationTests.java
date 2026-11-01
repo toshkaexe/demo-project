@@ -41,7 +41,8 @@ class LiquibaseMigrationTests {
 
         assertThat(applied).containsExactly(
                 "001-create-users-table", "002-create-products-table", "003-create-orders-table",
-                "004-create-order-items-table", "004-create-order-status-history-table");
+                "004-create-order-items-table", "004-create-order-status-history-table",
+                "005-users-role-check");
     }
 
     @Test
@@ -249,6 +250,15 @@ class LiquibaseMigrationTests {
                 .isInstanceOf(DataIntegrityViolationException.class);
         assertThatThrownBy(() -> jdbc.update(
                 "insert into order_status_history (order_id, from_status, to_status) values (?, 'READY', 'READY')", orderId))
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void userRoleMustBeKnown() {
+        long userId = insertUser("anton@example.com");
+
+        jdbc.update("update users set role = 'WAREHOUSE' where id = ?", userId);
+        assertThatThrownBy(() -> jdbc.update("update users set role = 'ADMIN' where id = ?", userId))
                 .isInstanceOf(DataIntegrityViolationException.class);
     }
 

@@ -15,6 +15,14 @@ public interface OrderRepository extends JpaRepository<Orders, Long> {
     @EntityGraph(attributePaths = {"items", "items.product"})
     List<Orders> findByUserIdOrderByIdDesc(Long userId);
 
+    // for the warehouse: all orders, newest first
+    @EntityGraph(attributePaths = {"items", "items.product"})
+    List<Orders> findAllByOrderByIdDesc();
+
+    // for the warehouse: any order
+    @EntityGraph(attributePaths = {"items", "items.product"})
+    Optional<Orders> findWithItemsById(Long id);
+
     // an order of another user is "not found": the client can't tell whether it exists
     @EntityGraph(attributePaths = {"items", "items.product"})
     Optional<Orders> findByIdAndUserId(Long id, Long userId);

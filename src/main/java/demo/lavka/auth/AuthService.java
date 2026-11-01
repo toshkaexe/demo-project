@@ -3,6 +3,7 @@ package demo.lavka.auth;
 import java.util.Locale;
 
 import demo.lavka.auth.JWTService.VerifiedToken;
+import demo.lavka.entity.Role;
 import demo.lavka.entity.User;
 import demo.lavka.model.TokenPair;
 import demo.lavka.repository.UserRepository;
@@ -102,6 +103,20 @@ public class AuthService {
         VerifiedToken access = jwtService.validateToken(accessToken, TokenType.ACCESS);
         return userRepository.findById(access.userId())
                 .orElseThrow(() -> unauthorized("User not found"));
+    }
+
+    /**
+     * Like {@link #authenticate}, and the user must have the given role.
+     *
+     * @throws ResponseStatusException 403 if the role is different
+     */
+    public User requireRole(String accessToken, Role role) {
+        User user = authenticate(accessToken);
+        if (user.getRole() != role) {
+            log.warn("Access denied: userId={} role={} needs {}", user.getId(), user.getRole(), role);
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Only " + role + " can do this");
+        }
+        return user;
     }
 
     // emails are case-insensitive: Anton@Mail.com and anton@mail.com are the same user

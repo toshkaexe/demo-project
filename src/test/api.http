@@ -1,9 +1,3 @@
-# Scenario for IntelliJ HTTP Client: choose the "dev" environment and press "Run All Requests in File".
-# Requests run top to bottom and pass ids and tokens to each other through client.global,
-# every request checks its answer (client.test). Needs a running app and database (see README).
-# The user email is new on every run, so the file can be run again and again.
-# Product stock checks assume nobody else changes the products created here during the run.
-
 
 ### ===== Auth =====
 
@@ -88,6 +82,7 @@ Authorization: Bearer {{access_token}}
         client.assert(response.status === 200, "status " + response.status);
         client.assert(response.body.email === client.global.get("email"), "email " + response.body.email);
         client.assert(response.body.password_hash === undefined, "password hash must not be returned");
+        client.assert(response.body.role === "CUSTOMER", "role " + response.body.role);
     });
     client.global.set("user_id", response.body.id);
 %}
@@ -139,10 +134,78 @@ Content-Type: application/json
 %}
 
 
+### ===== Warehouse employee =====
+
+### 9. Warehouse: login (the employee is created by fill_all.sh)
+POST {{host}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "warehouse@lavka.local",
+  "password": "123456"
+}
+
+> {%
+    client.test("warehouse login: 200 (if 401, run ./src/test/fill_all.sh first)", () => {
+        client.assert(response.status === 200, "status " + response.status);
+    });
+    client.global.set("warehouse_token", response.body.access_token);
+%}
+
+
+### 10. Warehouse: the role is WAREHOUSE
+GET {{host}}/users/me
+Authorization: Bearer {{warehouse_token}}
+
+> {%
+    client.test("warehouse me: role WAREHOUSE", () => {
+        client.assert(response.status === 200, "status " + response.status);
+        client.assert(response.body.role === "WAREHOUSE", "role " + response.body.role + ": run ./src/test/fill_all.sh");
+    });
+    client.global.set("warehouse_id", response.body.id);
+%}
+
+
 ### ===== Products =====
 
-### 9. Products: create -> 201 + Location: /products/{id}
+### 11. Products: create without a token -> 401 (reading is open, writing is for the warehouse)
 POST {{host}}/products
+Content-Type: application/json
+
+{
+  "name": "Anonymous product",
+  "quantity": 1,
+  "price": 1.00
+}
+
+> {%
+    client.test("create product without token: 401", () => {
+        client.assert(response.status === 401, "status " + response.status);
+    });
+%}
+
+
+### 12. Products: a customer can't change the catalog -> 403
+POST {{host}}/products
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "name": "Customer product",
+  "quantity": 1,
+  "price": 1.00
+}
+
+> {%
+    client.test("create product as customer: 403", () => {
+        client.assert(response.status === 403, "status " + response.status);
+    });
+%}
+
+
+### 13. Products: create -> 201 + Location: /products/{id}
+POST {{host}}/products
+Authorization: Bearer {{warehouse_token}}
 Content-Type: application/json
 
 {
@@ -164,8 +227,9 @@ Content-Type: application/json
 %}
 
 
-### 10. Products: second product for orders
+### 14. Products: second product for orders
 POST {{host}}/products
+Authorization: Bearer {{warehouse_token}}
 Content-Type: application/json
 
 {
@@ -182,8 +246,9 @@ Content-Type: application/json
 %}
 
 
-### 11. Products: invalid body -> 400 (empty name, negative quantity, 3 digits after the point)
+### 15. Products: invalid body -> 400 (empty name, negative quantity, 3 digits after the point)
 POST {{host}}/products
+Authorization: Bearer {{warehouse_token}}
 Content-Type: application/json
 
 {
@@ -199,7 +264,7 @@ Content-Type: application/json
 %}
 
 
-### 12. Products: list all, sorted by id
+### 16. Products: list all, sorted by id
 GET {{host}}/products
 
 > {%
@@ -212,7 +277,7 @@ GET {{host}}/products
 %}
 
 
-### 13. Products: one by id
+### 17. Products: one by id
 GET {{host}}/products/{{product_id}}
 
 > {%
@@ -223,7 +288,7 @@ GET {{host}}/products/{{product_id}}
 %}
 
 
-### 14. Products: unknown id -> 404
+### 18. Products: unknown id -> 404
 GET {{host}}/products/2000000000
 
 > {%
@@ -233,8 +298,9 @@ GET {{host}}/products/2000000000
 %}
 
 
-### 15. Products: update, replaces all fields (PUT)
+### 19. Products: update, replaces all fields (PUT)
 PUT {{host}}/products/{{product_id}}
+Authorization: Bearer {{warehouse_token}}
 Content-Type: application/json
 
 {
@@ -252,7 +318,7 @@ Content-Type: application/json
 %}
 
 
-### 16. Products: the update is really saved, not only returned
+### 20. Products: the update is really saved, not only returned
 GET {{host}}/products/{{product_id}}
 
 > {%
@@ -264,8 +330,9 @@ GET {{host}}/products/{{product_id}}
 %}
 
 
-### 17. Products: update with an invalid body -> 400
+### 21. Products: update with an invalid body -> 400
 PUT {{host}}/products/{{product_id}}
+Authorization: Bearer {{warehouse_token}}
 Content-Type: application/json
 
 {
@@ -281,8 +348,9 @@ Content-Type: application/json
 %}
 
 
-### 18. Products: update an unknown product -> 404
+### 22. Products: update an unknown product -> 404
 PUT {{host}}/products/2000000000
+Authorization: Bearer {{warehouse_token}}
 Content-Type: application/json
 
 {
@@ -300,7 +368,7 @@ Content-Type: application/json
 
 ### ===== Orders =====
 
-### 19. Orders: without a token -> 401
+### 23. Orders: without a token -> 401
 POST {{host}}/orders
 Content-Type: application/json
 
@@ -315,7 +383,7 @@ Content-Type: application/json
 %}
 
 
-### 20. Orders: create -> 201 + Location: /orders/{id}, the items are taken from stock
+### 24. Orders: create -> 201 + Location: /orders/{id}, the items are taken from stock
 POST {{host}}/orders
 Authorization: Bearer {{access_token}}
 Content-Type: application/json
@@ -344,7 +412,7 @@ Content-Type: application/json
 %}
 
 
-### 21. Products: stock went down by the ordered quantity (10 - 2)
+### 25. Products: stock went down by the ordered quantity (10 - 2)
 GET {{host}}/products/{{product_id}}
 
 > {%
@@ -354,7 +422,7 @@ GET {{host}}/products/{{product_id}}
 %}
 
 
-### 22. Orders: more than in stock -> 409, nothing is taken
+### 26. Orders: more than in stock -> 409, nothing is taken
 POST {{host}}/orders
 Authorization: Bearer {{access_token}}
 Content-Type: application/json
@@ -373,7 +441,7 @@ Content-Type: application/json
 %}
 
 
-### 23. Products: the rejected order took nothing (bread is still 5 - 1)
+### 27. Products: the rejected order took nothing (bread is still 5 - 1)
 GET {{host}}/products/{{product2_id}}
 
 > {%
@@ -383,7 +451,7 @@ GET {{host}}/products/{{product2_id}}
 %}
 
 
-### 24. Orders: invalid body -> 400 (same product twice)
+### 28. Orders: invalid body -> 400 (same product twice)
 POST {{host}}/orders
 Authorization: Bearer {{access_token}}
 Content-Type: application/json
@@ -402,7 +470,7 @@ Content-Type: application/json
 %}
 
 
-### 25. Orders: my orders, newest first
+### 29. Orders: my orders, newest first
 GET {{host}}/orders
 Authorization: Bearer {{access_token}}
 
@@ -414,7 +482,7 @@ Authorization: Bearer {{access_token}}
 %}
 
 
-### 26. Orders: one of my orders
+### 30. Orders: one of my orders
 GET {{host}}/orders/{{order_id}}
 Authorization: Bearer {{access_token}}
 
@@ -426,10 +494,26 @@ Authorization: Bearer {{access_token}}
 %}
 
 
-### 27. Orders: change status -> 200
-# CREATED -> PROCESSING -> READY -> COMPLETED, CANCELLED from any status before COMPLETED (returns items to stock)
+### 31. Orders: a customer can't move the order forward -> 403
 PATCH {{host}}/orders/{{order_id}}/status
 Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "status": "PROCESSING"
+}
+
+> {%
+    client.test("customer -> PROCESSING: 403", () => {
+        client.assert(response.status === 403, "status " + response.status);
+    });
+%}
+
+
+### 32. Orders: the warehouse starts assembling -> 200
+# CREATED -> PROCESSING -> READY -> COMPLETED, CANCELLED from any status before COMPLETED (returns items to stock)
+PATCH {{host}}/orders/{{order_id}}/status
+Authorization: Bearer {{warehouse_token}}
 Content-Type: application/json
 
 {
@@ -444,9 +528,9 @@ Content-Type: application/json
 %}
 
 
-### 28. Orders: skipping a step -> 409
+### 33. Orders: skipping a step -> 409
 PATCH {{host}}/orders/{{order_id}}/status
-Authorization: Bearer {{access_token}}
+Authorization: Bearer {{warehouse_token}}
 Content-Type: application/json
 
 {
@@ -460,7 +544,7 @@ Content-Type: application/json
 %}
 
 
-### 29. Orders: unknown status -> 400
+### 34. Orders: unknown status -> 400
 PATCH {{host}}/orders/{{order_id}}/status
 Authorization: Bearer {{access_token}}
 Content-Type: application/json
@@ -476,8 +560,9 @@ Content-Type: application/json
 %}
 
 
-### 30. Orders: a product in an order can't be deleted -> 409
+### 35. Orders: a product in an order can't be deleted -> 409
 DELETE {{host}}/products/{{product_id}}
+Authorization: Bearer {{warehouse_token}}
 
 > {%
     client.test("delete ordered product: 409", () => {
@@ -486,7 +571,7 @@ DELETE {{host}}/products/{{product_id}}
 %}
 
 
-### 31. Orders: cancel -> 200, the items go back to stock
+### 36. Orders: the customer cancels -> 200, the items go back to stock
 PATCH {{host}}/orders/{{order_id}}/status
 Authorization: Bearer {{access_token}}
 Content-Type: application/json
@@ -504,7 +589,7 @@ Content-Type: application/json
 %}
 
 
-### 32. Products: stock is back after the cancel (8 + 2)
+### 37. Products: stock is back after the cancel (8 + 2)
 GET {{host}}/products/{{product_id}}
 
 > {%
@@ -514,9 +599,9 @@ GET {{host}}/products/{{product_id}}
 %}
 
 
-### 33. Orders: CANCELLED is final -> 409
+### 38. Orders: CANCELLED is final -> 409
 PATCH {{host}}/orders/{{order_id}}/status
-Authorization: Bearer {{access_token}}
+Authorization: Bearer {{warehouse_token}}
 Content-Type: application/json
 
 {
@@ -530,7 +615,7 @@ Content-Type: application/json
 %}
 
 
-### 34. Orders: status history, oldest first
+### 39. Orders: status history, oldest first
 GET {{host}}/orders/{{order_id}}/history
 Authorization: Bearer {{access_token}}
 
@@ -540,12 +625,13 @@ Authorization: Bearer {{access_token}}
         const steps = response.body.map(h => (h.from_status || "null") + "->" + h.to_status);
         client.assert(steps.join(", ") === "null->CREATED, CREATED->PROCESSING, PROCESSING->CANCELLED",
             "history " + steps.join(", "));
-        client.assert(response.body[2].changed_by === client.global.get("user_id"), "changed_by " + response.body[2].changed_by);
+        client.assert(response.body[1].changed_by === client.global.get("warehouse_id"), "PROCESSING by " + response.body[1].changed_by);
+        client.assert(response.body[2].changed_by === client.global.get("user_id"), "CANCELLED by " + response.body[2].changed_by);
     });
 %}
 
 
-### 35. Orders: unknown or someone else's order -> 404
+### 40. Orders: unknown or someone else's order -> 404
 GET {{host}}/orders/9000000000000
 Authorization: Bearer {{access_token}}
 
@@ -558,8 +644,9 @@ Authorization: Bearer {{access_token}}
 
 ### ===== Delete =====
 
-### 36. Products: a product that was never ordered
+### 41. Products: a product that was never ordered
 POST {{host}}/products
+Authorization: Bearer {{warehouse_token}}
 Content-Type: application/json
 
 {
@@ -576,8 +663,9 @@ Content-Type: application/json
 %}
 
 
-### 37. Products: delete -> 204
+### 42. Products: delete -> 204
 DELETE {{host}}/products/{{temp_product_id}}
+Authorization: Bearer {{warehouse_token}}
 
 > {%
     client.test("delete product: 204", () => {
@@ -586,7 +674,7 @@ DELETE {{host}}/products/{{temp_product_id}}
 %}
 
 
-### 38. Products: deleted product is gone -> 404
+### 43. Products: deleted product is gone -> 404
 GET {{host}}/products/{{temp_product_id}}
 
 > {%
@@ -598,7 +686,7 @@ GET {{host}}/products/{{temp_product_id}}
 
 ### ===== Logout =====
 
-### 39. Logout: revokes both tokens -> 204
+### 44. Logout: revokes both tokens -> 204
 POST {{host}}/auth/logout
 Authorization: Bearer {{access_token}}
 Content-Type: application/json
@@ -614,7 +702,7 @@ Content-Type: application/json
 %}
 
 
-### 40. The revoked access token no longer works -> 401
+### 45. The revoked access token no longer works -> 401
 GET {{host}}/users/me
 Authorization: Bearer {{access_token}}
 

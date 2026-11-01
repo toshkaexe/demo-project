@@ -10,6 +10,13 @@ info:
     Access-токен (живёт 15 минут) передаётся в заголовке `Authorization: Bearer <access_token>`,
     refresh-токен (30 дней) нужен только для `POST /auth/refresh` и `POST /auth/logout`.
 
+    **Роли** хранятся в базе (`users.role`) и проверяются на каждом запросе:
+    - `CUSTOMER` — покупатель. Выдаётся при регистрации. Видит только свои заказы и может их только отменить;
+    - `WAREHOUSE` — сотрудник склада. Назначается только в базе. Ведёт каталог товаров, видит все заказы
+      и проводит их по статусам.
+
+    Без токена — `401`, с токеном другой роли — `403`.
+
     **Ошибки** возвращаются в стандартном формате Spring (схема `Error`), причина — в поле `message`.
 
     Подробности о логике — в `README.md`.
@@ -24,9 +31,9 @@ tags:
   - name: users
     description: текущий пользователь
   - name: products
-    description: каталог товаров. Пока без авторизации
+    description: каталог товаров. Читать может кто угодно, менять — только сотрудник склада (`WAREHOUSE`)
   - name: orders
-    description: заказы текущего пользователя. Пользователь видит и меняет только свои заказы
+    description: заказы. Покупатель видит свои и может только отменить, склад видит все и проводит по статусам
 
 paths:
 
@@ -195,7 +202,11 @@ paths:
       tags: [products]
       operationId: createProduct
       summary: Создать товар
-      description: Пробелы по краям `name` обрезаются.
+      description: |
+        Только для сотрудника склада (`WAREHOUSE`). Пробелы по краям `name` обрезаются.
+        Роль проверяется до чтения тела: без прав клиент получает `401`/`403`, а не ошибки валидации.
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -217,6 +228,10 @@ paths:
                 $ref: '#/components/schemas/Product'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/WarehouseOnly'
 
   /products/{id}:
     parameters:
@@ -238,7 +253,10 @@ paths:
       tags: [products]
       operationId: updateProduct
       summary: Заменить все поля товара
+      security:
+        - bearerAuth: []
       description: |
+        Только для сотрудника склада (`WAREHOUSE`).
         Семантика PUT: заменяются все поля, поэтому в теле нужны все три.
         Цена в уже оформленных заказах не меняется, там хранится цена на момент заказа.
       requestBody:
@@ -256,16 +274,26 @@ paths:
                 $ref: '#/components/schemas/Product'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/WarehouseOnly'
         '404':
           $ref: '#/components/responses/ProductNotFound'
     delete:
       tags: [products]
       operationId: deleteProduct
       summary: Удалить товар
-      description: Удаляет навсегда. Товар, который есть хоть в одном заказе, удалить нельзя.
+      description: Только для сотрудника склада (`WAREHOUSE`). Удаляет навсегда. Товар, который есть хоть в одном заказе, удалить нельзя.
+      security:
+        - bearerAuth: []
       responses:
         '204':
           description: товар удалён
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/WarehouseOnly'
         '404':
           $ref: '#/components/responses/ProductNotFound'
         '409':
@@ -281,8 +309,8 @@ paths:
     get:
       tags: [orders]
       operationId: listOrders
-      summary: Мои заказы
-      description: Заказы текущего пользователя, новые сверху.
+      summary: Список заказов
+      description: Покупатель получает свои заказы, сотрудник склада — все заказы. Новые сверху.
       security:
         - bearerAuth: []
       responses:
@@ -351,7 +379,8 @@ paths:
     get:
       tags: [orders]
       operationId: getOrder
-      summary: Один мой заказ
+      summary: Один заказ
+      description: Покупателю доступны только свои заказы (чужой — `404`), складу — любой.
       security:
         - bearerAuth: []
       responses:
@@ -374,6 +403,10 @@ paths:
       operationId: changeOrderStatus
       summary: Сменить статус заказа
       description: |
+        **Кто может:** покупатель — только отменить свой заказ (`CANCELLED`).
+        Сборку и доставку (`PROCESSING`, `READY`, `COMPLETED`) ставит только сотрудник склада, иначе `403`.
+        Склад может и отменить заказ.
+
         Разрешённые переходы: `CREATED → PROCESSING → READY → COMPLETED`, вперёд только на один шаг.
         `CANCELLED` — из любого статуса до `COMPLETED`. `COMPLETED` и `CANCELLED` конечные.
 
@@ -399,6 +432,12 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: '`Only WAREHOUSE can move an order to X, a customer can only cancel it`'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '404':
           $ref: '#/components/responses/OrderNotFound'
         '409':
@@ -415,7 +454,9 @@ paths:
       tags: [orders]
       operationId: getOrderHistory
       summary: История статусов заказа
-      description: Все смены статуса, старые сверху. Первая запись — создание заказа (`from_status` = `null`).
+      description: |
+        Все смены статуса, старые сверху. Первая запись — создание заказа (`from_status` = `null`).
+        `changed_by` показывает, кто сменил статус: покупатель или сотрудник склада.
       security:
         - bearerAuth: []
       responses:
@@ -474,6 +515,12 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/Error'
+    WarehouseOnly:
+      description: '`Only WAREHOUSE can do this`: у пользователя роль `CUSTOMER`'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
     ProductNotFound:
       description: '`Product {id} not found`'
       content:
@@ -481,7 +528,7 @@ components:
           schema:
             $ref: '#/components/schemas/Error'
     OrderNotFound:
-      description: '`Order {id} not found`: заказа нет или он принадлежит другому пользователю'
+      description: '`Order {id} not found`: заказа нет или покупатель запросил чужой заказ'
       content:
         application/json:
           schema:
@@ -538,9 +585,16 @@ components:
           type: string
           description: JWT, живёт 30 дней, одноразовый
 
+    Role:
+      type: string
+      enum: [CUSTOMER, WAREHOUSE]
+      description: |
+        `CUSTOMER` — покупатель, выдаётся при регистрации.
+        `WAREHOUSE` — сотрудник склада, назначается только в базе.
+
     User:
       type: object
-      required: [id, email, created_at, updated_at]
+      required: [id, email, role, created_at, updated_at]
       properties:
         id:
           type: integer
@@ -549,6 +603,8 @@ components:
           type: string
           format: email
           description: в нижнем регистре
+        role:
+          $ref: '#/components/schemas/Role'
         created_at:
           type: string
           format: date-time

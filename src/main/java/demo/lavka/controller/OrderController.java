@@ -5,6 +5,7 @@ import java.util.List;
 
 import demo.lavka.auth.AuthService;
 import demo.lavka.auth.BearerToken;
+import demo.lavka.entity.User;
 import demo.lavka.model.ChangeOrderStatusRequest;
 import demo.lavka.model.CreateOrderRequest;
 import demo.lavka.model.OrderResponse;
@@ -24,7 +25,8 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
 /**
- * Orders of the user from the access token. There is no DELETE: order history must not disappear,
+ * A customer works with own orders and can only cancel them, the warehouse sees every order and moves it
+ * through the statuses (see {@link OrderService}). There is no DELETE: order history must not disappear,
  * an order is cancelled instead (status CANCELLED).
  */
 @RestController
@@ -41,13 +43,13 @@ public class OrderController {
 
     @GetMapping
     public List<OrderResponse> findAll(@RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorization) {
-        return orderService.findAll(userId(authorization));
+        return orderService.findAll(user(authorization));
     }
 
     @GetMapping("/{id}")
     public OrderResponse findById(@RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorization,
                                   @PathVariable Long id) {
-        return orderService.findById(userId(authorization), id);
+        return orderService.findById(user(authorization), id);
     }
 
     /**
@@ -56,7 +58,7 @@ public class OrderController {
     @PostMapping
     public ResponseEntity<OrderResponse> create(@RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorization,
                                                 @Valid @RequestBody CreateOrderRequest request) {
-        OrderResponse created = orderService.create(userId(authorization), request);
+        OrderResponse created = orderService.create(user(authorization).getId(), request);
         URI location = ServletUriComponentsBuilder.fromCurrentRequest()
                 .path("/{id}")
                 .buildAndExpand(created.id())
@@ -70,21 +72,22 @@ public class OrderController {
     @GetMapping("/{id}/history")
     public List<OrderStatusHistoryResponse> history(@RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorization,
                                                     @PathVariable Long id) {
-        return orderService.history(userId(authorization), id);
+        return orderService.history(user(authorization), id);
     }
 
     /**
-     * Cancelling ({@code CANCELLED}) returns the items to stock.
+     * A customer may only cancel ({@code CANCELLED}), other statuses need the warehouse role (403).
+     * Cancelling returns the items to stock.
      */
     @PatchMapping("/{id}/status")
     public OrderResponse changeStatus(@RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorization,
                                       @PathVariable Long id,
                                       @Valid @RequestBody ChangeOrderStatusRequest request) {
-        return orderService.changeStatus(userId(authorization), id, request.status());
+        return orderService.changeStatus(user(authorization), id, request.status());
     }
 
-    private Long userId(String authorization) {
-        return authService.authenticate(BearerToken.from(authorization)).getId();
+    private User user(String authorization) {
+        return authService.authenticate(BearerToken.from(authorization));
     }
 
 }

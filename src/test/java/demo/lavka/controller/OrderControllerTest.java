@@ -50,7 +50,10 @@ class OrderControllerTest {
     private JdbcTemplate jdbc;
 
     private MockMvc mvc;
+    // a customer: places and cancels own orders
     private String token;
+    // a warehouse employee: moves orders through the statuses
+    private String warehouse;
     private Integer milk;
     private Integer bread;
 
@@ -59,6 +62,7 @@ class OrderControllerTest {
         cleanUp();
         mvc = MockMvcBuilders.webAppContextSetup(context).build();
         token = register("anton@example.com");
+        warehouse = TestUsers.warehouse(mvc, jdbc, "warehouse@example.com");
         milk = product("Milk", 10, "89.90");
         bread = product("Bread", 5, "45.00");
     }
@@ -178,9 +182,9 @@ class OrderControllerTest {
     void orderGoesThroughAllStatusesToCompleted() throws Exception {
         Long id = createAndGetId(token, items(milk, 1));
 
-        changeStatus(token, id, "PROCESSING").andExpect(status().isOk()).andExpect(jsonPath("$.status").value("PROCESSING"));
-        changeStatus(token, id, "READY").andExpect(status().isOk());
-        changeStatus(token, id, "COMPLETED")
+        changeStatus(warehouse, id, "PROCESSING").andExpect(status().isOk()).andExpect(jsonPath("$.status").value("PROCESSING"));
+        changeStatus(warehouse, id, "READY").andExpect(status().isOk());
+        changeStatus(warehouse, id, "COMPLETED")
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("COMPLETED"))
                 .andExpect(jsonPath("$.completed_at").isNotEmpty());
@@ -195,8 +199,9 @@ class OrderControllerTest {
     @Test
     void historyHasEveryStatusChange() throws Exception {
         Long userId = userRepository.findByEmail("anton@example.com").orElseThrow().getId();
+        Long warehouseId = userRepository.findByEmail("warehouse@example.com").orElseThrow().getId();
         Long id = createAndGetId(token, items(milk, 1));
-        changeStatus(token, id, "PROCESSING").andExpect(status().isOk());
+        changeStatus(warehouse, id, "PROCESSING").andExpect(status().isOk());
         changeStatus(token, id, "CANCELLED").andExpect(status().isOk());
 
         mvc.perform(get("/orders/{id}/history", id).header("Authorization", "Bearer " + token))
@@ -206,6 +211,7 @@ class OrderControllerTest {
                 .andExpect(jsonPath("$[0].to_status").value("CREATED"))
                 .andExpect(jsonPath("$[1].from_status").value("CREATED"))
                 .andExpect(jsonPath("$[1].to_status").value("PROCESSING"))
+                .andExpect(jsonPath("$[1].changed_by").value(warehouseId))
                 .andExpect(jsonPath("$[2].from_status").value("PROCESSING"))
                 .andExpect(jsonPath("$[2].to_status").value("CANCELLED"))
                 .andExpect(jsonPath("$[2].changed_by").value(userId))
@@ -215,7 +221,7 @@ class OrderControllerTest {
     @Test
     void cancelReturnsItemsToStock() throws Exception {
         Long id = createAndGetId(token, items(milk, 3, bread, 2));
-        changeStatus(token, id, "PROCESSING").andExpect(status().isOk());
+        changeStatus(warehouse, id, "PROCESSING").andExpect(status().isOk());
 
         changeStatus(token, id, "CANCELLED").andExpect(status().isOk()).andExpect(jsonPath("$.completed_at").doesNotExist());
 
@@ -228,14 +234,50 @@ class OrderControllerTest {
     void wrongTransitionsAreRejected() throws Exception {
         Long id = createAndGetId(token, items(milk, 1));
 
-        changeStatus(token, id, "COMPLETED").andExpect(status().isConflict());  // skipping steps
-        changeStatus(token, id, "CREATED").andExpect(status().isConflict());    // same status
-        changeStatus(token, id, "CANCELLED").andExpect(status().isOk());
-        changeStatus(token, id, "PROCESSING").andExpect(status().isConflict()); // CANCELLED is final
-        changeStatus(token, id, "CANCELLED").andExpect(status().isConflict());  // stock is not returned twice
+        changeStatus(warehouse, id, "COMPLETED").andExpect(status().isConflict());  // skipping steps
+        changeStatus(warehouse, id, "CREATED").andExpect(status().isConflict());    // same status
+        changeStatus(warehouse, id, "CANCELLED").andExpect(status().isOk());
+        changeStatus(warehouse, id, "PROCESSING").andExpect(status().isConflict()); // CANCELLED is final
+        changeStatus(warehouse, id, "CANCELLED").andExpect(status().isConflict());  // stock is not returned twice
 
         assertThat(orderRepository.findById(id).orElseThrow().getStatus()).isEqualTo(OrderStatus.CANCELLED);
         assertThat(stock(milk)).isEqualTo(10);
+    }
+
+    @Test
+    void customerCanOnlyCancel() throws Exception {
+        Long id = createAndGetId(token, items(milk, 1));
+
+        changeStatus(token, id, "PROCESSING")
+                .andExpect(status().isForbidden())
+                .andExpect(status().reason("Only WAREHOUSE can move an order to PROCESSING, a customer can only cancel it"));
+        assertThat(orderRepository.findById(id).orElseThrow().getStatus()).isEqualTo(OrderStatus.CREATED);
+
+        changeStatus(warehouse, id, "PROCESSING").andExpect(status().isOk());
+        changeStatus(warehouse, id, "READY").andExpect(status().isOk());
+        changeStatus(token, id, "COMPLETED").andExpect(status().isForbidden());
+        changeStatus(token, id, "CANCELLED").andExpect(status().isOk());
+
+        assertThat(orderRepository.findById(id).orElseThrow().getStatus()).isEqualTo(OrderStatus.CANCELLED);
+        assertThat(stock(milk)).isEqualTo(10);
+    }
+
+    @Test
+    void warehouseSeesAndProcessesOrdersOfAllCustomers() throws Exception {
+        Long mine = createAndGetId(token, items(milk, 1));
+        Long others = createAndGetId(register("other@example.com"), items(bread, 1));
+
+        mvc.perform(get("/orders").header("Authorization", TestUsers.bearer(warehouse)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(2))
+                .andExpect(jsonPath("$[0].id").value(others))
+                .andExpect(jsonPath("$[1].id").value(mine));
+        getOrder(warehouse, others).andExpect(status().isOk()).andExpect(jsonPath("$.items[0].name").value("Bread"));
+        mvc.perform(get("/orders/{id}/history", others).header("Authorization", TestUsers.bearer(warehouse)))
+                .andExpect(status().isOk());
+
+        changeStatus(warehouse, others, "PROCESSING").andExpect(status().isOk());
+        assertThat(orderRepository.findById(others).orElseThrow().getStatus()).isEqualTo(OrderStatus.PROCESSING);
     }
 
     @Test
@@ -254,7 +296,8 @@ class OrderControllerTest {
     void orderedProductCannotBeDeleted() throws Exception {
         createAndGetId(token, items(milk, 1));
 
-        mvc.perform(delete("/products/{id}", milk)).andExpect(status().isConflict());
+        mvc.perform(delete("/products/{id}", milk).header("Authorization", TestUsers.bearer(warehouse)))
+                .andExpect(status().isConflict());
         assertThat(productRepository.existsById(milk)).isTrue();
     }
 

@@ -6,12 +6,14 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
 import demo.lavka.entity.OrderStatus;
 import demo.lavka.entity.OrderItem;
 import demo.lavka.entity.Orders;
 import demo.lavka.entity.Products;
+import demo.lavka.entity.Role;
 import demo.lavka.entity.User;
 import demo.lavka.model.CreateOrderRequest;
 import demo.lavka.model.OrderResponse;
@@ -33,8 +35,12 @@ import static demo.lavka.entity.OrderStatus.PROCESSING;
 import static demo.lavka.entity.OrderStatus.READY;
 
 /**
- * Orders of the current user. Every method takes the user's id from the access token,
- * so a user can't see or change someone else's orders.
+ * Who may do what, by the role of the user from the access token:
+ * <ul>
+ *     <li>{@link Role#CUSTOMER} sees only own orders and may only cancel them;</li>
+ *     <li>{@link Role#WAREHOUSE} sees every order and moves it through all statuses.</li>
+ * </ul>
+ * Anyone may place an order for themselves. An order the user may not see is "not found" (404).
  */
 @Service
 public class OrderService {
@@ -64,20 +70,23 @@ public class OrderService {
     }
 
     @Transactional(readOnly = true)
-    public List<OrderResponse> findAll(Long userId) {
-        return orderRepository.findByUserIdOrderByIdDesc(userId).stream()
+    public List<OrderResponse> findAll(User actor) {
+        List<Orders> orders = actor.getRole() == Role.WAREHOUSE
+                ? orderRepository.findAllByOrderByIdDesc()
+                : orderRepository.findByUserIdOrderByIdDesc(actor.getId());
+        return orders.stream()
                 .map(OrderResponse::from)
                 .toList();
     }
 
     @Transactional(readOnly = true)
-    public OrderResponse findById(Long userId, Long orderId) {
-        return OrderResponse.from(getOrThrow(userId, orderId));
+    public OrderResponse findById(User actor, Long orderId) {
+        return OrderResponse.from(getOrThrow(actor, orderId));
     }
 
     @Transactional(readOnly = true)
-    public List<OrderStatusHistoryResponse> history(Long userId, Long orderId) {
-        return getOrThrow(userId, orderId).getStatusHistory().stream()
+    public List<OrderStatusHistoryResponse> history(User actor, Long orderId) {
+        return getOrThrow(actor, orderId).getStatusHistory().stream()
                 .map(OrderStatusHistoryResponse::from)
                 .toList();
     }
@@ -125,8 +134,13 @@ public class OrderService {
      * Needs the transaction: the order is changed in place and dirty checking writes it on commit.
      */
     @Transactional
-    public OrderResponse changeStatus(Long userId, Long orderId, OrderStatus newStatus) {
-        Orders order = getOrThrow(userId, orderId);
+    public OrderResponse changeStatus(User actor, Long orderId, OrderStatus newStatus) {
+        Orders order = getOrThrow(actor, orderId);
+        // assembling and delivering is the warehouse's job, a customer can only cancel
+        if (actor.getRole() != Role.WAREHOUSE && newStatus != CANCELLED) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                    "Only " + Role.WAREHOUSE + " can move an order to " + newStatus + ", a customer can only cancel it");
+        }
         OrderStatus current = order.getStatus();
         if (!TRANSITIONS.get(current).contains(newStatus)) {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
@@ -135,8 +149,9 @@ public class OrderService {
         if (newStatus == CANCELLED) {
             returnToStock(order);
         }
-        order.changeStatus(newStatus, userRepository.getReferenceById(userId));
-        log.info("Order status changed: id={} userId={} {} -> {}", orderId, userId, current, newStatus);
+        order.changeStatus(newStatus, userRepository.getReferenceById(actor.getId()));
+        log.info("Order status changed: id={} by userId={} ({}) {} -> {}", orderId, actor.getId(), actor.getRole(),
+                current, newStatus);
         return OrderResponse.from(order);
     }
 
@@ -149,8 +164,11 @@ public class OrderService {
         }
     }
 
-    private Orders getOrThrow(Long userId, Long orderId) {
-        return orderRepository.findByIdAndUserId(orderId, userId)
+    private Orders getOrThrow(User actor, Long orderId) {
+        Optional<Orders> order = actor.getRole() == Role.WAREHOUSE
+                ? orderRepository.findWithItemsById(orderId)
+                : orderRepository.findByIdAndUserId(orderId, actor.getId());
+        return order
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Order " + orderId + " not found"));
     }
 

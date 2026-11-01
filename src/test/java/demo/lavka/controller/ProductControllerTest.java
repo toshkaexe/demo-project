@@ -5,12 +5,15 @@ import java.math.BigDecimal;
 import com.jayway.jsonpath.JsonPath;
 import demo.lavka.TestcontainersConfiguration;
 import demo.lavka.repository.ProductRepository;
+import demo.lavka.repository.UserRepository;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
@@ -36,13 +39,72 @@ class ProductControllerTest {
     private WebApplicationContext context;
     @Autowired
     private ProductRepository productRepository;
+    @Autowired
+    private UserRepository userRepository;
+    @Autowired
+    private JdbcTemplate jdbc;
 
     private MockMvc mvc;
+    // writes need the warehouse role
+    private String warehouse;
+    private String customer;
 
     @BeforeEach
-    void setUp() {
-        productRepository.deleteAll();
+    void setUp() throws Exception {
+        cleanUp();
         mvc = MockMvcBuilders.webAppContextSetup(context).build();
+        warehouse = TestUsers.warehouse(mvc, jdbc, "warehouse@example.com");
+        customer = TestUsers.customer(mvc, "customer@example.com");
+    }
+
+    @AfterEach
+    void cleanUp() {
+        productRepository.deleteAll();
+        userRepository.deleteAll();
+    }
+
+    // --- access ---
+
+    @Test
+    void readingIsOpenForEveryone() throws Exception {
+        Integer id = createAndGetId(json("Milk", 10, "89.90"));
+
+        mvc.perform(get("/products")).andExpect(status().isOk());
+        mvc.perform(get("/products/{id}", id)).andExpect(status().isOk());
+    }
+
+    @Test
+    void writesWithoutTokenReturn401() throws Exception {
+        Integer id = createAndGetId(json("Milk", 10, "89.90"));
+
+        mvc.perform(post("/products").contentType(MediaType.APPLICATION_JSON).content(json("Bread", 1, "1.00")))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(put("/products/{id}", id).contentType(MediaType.APPLICATION_JSON).content(json("Hacked", 0, "0.00")))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(delete("/products/{id}", id)).andExpect(status().isUnauthorized());
+        // the role is checked before the body: no validation details for an anonymous client
+        mvc.perform(post("/products").contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isUnauthorized());
+
+        assertThat(productRepository.findById(id).orElseThrow().getName()).isEqualTo("Milk");
+    }
+
+    @Test
+    void customerCannotChangeCatalog() throws Exception {
+        Integer id = createAndGetId(json("Milk", 10, "89.90"));
+
+        mvc.perform(post("/products").header("Authorization", TestUsers.bearer(customer))
+                        .contentType(MediaType.APPLICATION_JSON).content(json("Bread", 1, "1.00")))
+                .andExpect(status().isForbidden())
+                .andExpect(status().reason("Only WAREHOUSE can do this"));
+        mvc.perform(put("/products/{id}", id).header("Authorization", TestUsers.bearer(customer))
+                        .contentType(MediaType.APPLICATION_JSON).content(json("Hacked", 0, "0.00")))
+                .andExpect(status().isForbidden());
+        mvc.perform(delete("/products/{id}", id).header("Authorization", TestUsers.bearer(customer)))
+                .andExpect(status().isForbidden());
+
+        assertThat(productRepository.count()).isEqualTo(1);
+        assertThat(productRepository.findById(id).orElseThrow().getName()).isEqualTo("Milk");
     }
 
     // --- create ---
@@ -123,20 +185,24 @@ class ProductControllerTest {
     void deleteRemovesProduct() throws Exception {
         Integer id = createAndGetId(json("Milk", 10, "89.90"));
 
-        mvc.perform(delete("/products/{id}", id)).andExpect(status().isNoContent());
+        mvc.perform(delete("/products/{id}", id).header("Authorization", TestUsers.bearer(warehouse)))
+                .andExpect(status().isNoContent());
 
         assertThat(productRepository.existsById(id)).isFalse();
-        mvc.perform(delete("/products/{id}", id)).andExpect(status().isNotFound());
+        mvc.perform(delete("/products/{id}", id).header("Authorization", TestUsers.bearer(warehouse)))
+                .andExpect(status().isNotFound());
     }
 
     // --- helpers ---
 
     private ResultActions create(String body) throws Exception {
-        return mvc.perform(post("/products").contentType(MediaType.APPLICATION_JSON).content(body));
+        return mvc.perform(post("/products").header("Authorization", TestUsers.bearer(warehouse))
+                .contentType(MediaType.APPLICATION_JSON).content(body));
     }
 
     private ResultActions update(Integer id, String body) throws Exception {
-        return mvc.perform(put("/products/{id}", id).contentType(MediaType.APPLICATION_JSON).content(body));
+        return mvc.perform(put("/products/{id}", id).header("Authorization", TestUsers.bearer(warehouse))
+                .contentType(MediaType.APPLICATION_JSON).content(body));
     }
 
     private Integer createAndGetId(String body) throws Exception {
