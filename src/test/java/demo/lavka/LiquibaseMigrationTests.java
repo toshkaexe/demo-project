@@ -40,7 +40,8 @@ class LiquibaseMigrationTests {
                 "select id from databasechangelog order by orderexecuted", String.class);
 
         assertThat(applied).containsExactly(
-                "001-create-users-table", "002-create-products-table", "003-create-orders-table");
+                "001-create-users-table", "002-create-products-table", "003-create-orders-table",
+                "004-create-order-items-table", "004-create-order-status-history-table");
     }
 
     @Test
@@ -190,6 +191,89 @@ class LiquibaseMigrationTests {
                 .isInstanceOf(DataIntegrityViolationException.class);
         assertThatThrownBy(() -> jdbc.update("insert into orders (user_id, completed_at) values (?, now())", userId))
                 .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void orderItemsTableHasExpectedColumns() {
+        assertThat(columnsOf("order_items")).containsExactly(
+                "id bigint NO",
+                "order_id bigint NO",
+                "product_id integer NO",
+                "quantity integer NO",
+                "price numeric NO");
+    }
+
+    @Test
+    void orderItemQuantityIsPositiveAndProductIsUniqueInOrder() {
+        long orderId = insertOrder(insertUser("anton@example.com"));
+        long productId = insertProduct();
+
+        assertThatThrownBy(() -> insertItem(orderId, productId, 0))
+                .isInstanceOf(DataIntegrityViolationException.class);
+        insertItem(orderId, productId, 1);
+        assertThatThrownBy(() -> insertItem(orderId, productId, 2))
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void orderedProductCannotBeDeletedButOrderTakesItsItemsAlong() {
+        long orderId = insertOrder(insertUser("anton@example.com"));
+        long productId = insertProduct();
+        insertItem(orderId, productId, 1);
+
+        assertThatThrownBy(() -> jdbc.update("delete from products where id = ?", productId))
+                .isInstanceOf(DataIntegrityViolationException.class);
+
+        jdbc.update("delete from orders where id = ?", orderId);
+        assertThat(jdbc.queryForObject("select count(*) from order_items", Integer.class)).isZero();
+    }
+
+    @Test
+    void orderStatusHistoryTableHasExpectedColumns() {
+        assertThat(columnsOf("order_status_history")).containsExactly(
+                "id bigint NO",
+                "order_id bigint NO",
+                "from_status character varying YES",
+                "to_status character varying NO",
+                "changed_at timestamp with time zone NO",
+                "changed_by bigint YES");
+    }
+
+    @Test
+    void statusHistoryAcceptsOnlyKnownAndActualChanges() {
+        long orderId = insertOrder(insertUser("anton@example.com"));
+
+        jdbc.update("insert into order_status_history (order_id, to_status) values (?, 'CREATED')", orderId);
+        assertThatThrownBy(() -> jdbc.update(
+                "insert into order_status_history (order_id, from_status, to_status) values (?, 'CREATED', 'LOST')", orderId))
+                .isInstanceOf(DataIntegrityViolationException.class);
+        assertThatThrownBy(() -> jdbc.update(
+                "insert into order_status_history (order_id, from_status, to_status) values (?, 'READY', 'READY')", orderId))
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    private List<String> columnsOf(String table) {
+        return jdbc.queryForList("""
+                        select column_name, data_type, is_nullable
+                        from information_schema.columns
+                        where table_name = ?
+                        order by ordinal_position
+                        """, table).stream()
+                .map(c -> c.get("column_name") + " " + c.get("data_type") + " " + c.get("is_nullable"))
+                .toList();
+    }
+
+    private long insertOrder(long userId) {
+        return jdbc.queryForObject("insert into orders (user_id) values (?) returning id", Long.class, userId);
+    }
+
+    private long insertProduct() {
+        return jdbc.queryForObject("insert into products (name, price) values ('Milk', 10) returning id", Long.class);
+    }
+
+    private void insertItem(long orderId, long productId, int quantity) {
+        jdbc.update("insert into order_items (order_id, product_id, quantity, price) values (?, ?, ?, 10)",
+                orderId, productId, quantity);
     }
 
     private long insertUser(String email) {

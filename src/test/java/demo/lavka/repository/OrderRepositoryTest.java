@@ -57,11 +57,11 @@ class OrderRepositoryTest {
         Orders order = orderRepository.save(new Orders(user));
 
         for (OrderStatus status : new OrderStatus[] {OrderStatus.PROCESSING, OrderStatus.READY}) {
-            order.changeStatus(status);
+            order.changeStatus(status, user);
             order = orderRepository.save(order);
             assertThat(order.getCompletedAt()).isNull();
         }
-        order.changeStatus(OrderStatus.COMPLETED);
+        order.changeStatus(OrderStatus.COMPLETED, user);
         order = orderRepository.saveAndFlush(order);
 
         Orders saved = orderRepository.findById(order.getId()).orElseThrow();
@@ -72,7 +72,7 @@ class OrderRepositoryTest {
     @Test
     void cancelledOrderHasNoCompletedAt() {
         Orders order = orderRepository.save(new Orders(user));
-        order.changeStatus(OrderStatus.CANCELLED);
+        order.changeStatus(OrderStatus.CANCELLED, user);
         orderRepository.saveAndFlush(order);
 
         Orders saved = orderRepository.findById(order.getId()).orElseThrow();

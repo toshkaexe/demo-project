@@ -10,6 +10,7 @@ import demo.lavka.model.ProductResponse;
 import demo.lavka.repository.ProductRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -68,7 +69,14 @@ public class ProductService {
 
 
     public void delete(Integer id) {
-        productRepository.delete(getOrThrow(id));
+        Products product = getOrThrow(id);
+        try {
+            productRepository.delete(product);
+            productRepository.flush();
+        } catch (DataIntegrityViolationException e) {
+            // order_items.product_id is ON DELETE RESTRICT: old orders must keep their products
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Product " + id + " is used in orders and can't be deleted");
+        }
         log.info("Product deleted: id={}", id);
     }
 

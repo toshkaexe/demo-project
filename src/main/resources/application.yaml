@@ -20,6 +20,12 @@ spring:
       # show the reason ("Invalid email or password", ...) in error responses
       include-message: always
 
+springdoc:
+  swagger-ui:
+    # show the hand-written spec (descriptions, every error code, examples) instead of the one generated from code;
+    # the generated one stays at /v3/api-docs
+    url: /openapi.yaml
+
 auth:
   jwt:
     # HMAC signing key, at least 32 bytes; comes from .env or the JWT_SECRET env variable
