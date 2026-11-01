@@ -1,0 +1,807 @@
+openapi: 3.1.0
+
+info:
+  title: Lavka API
+  version: 0.1.0
+  description: |
+    Бэкенд онлайн-магазина продуктов: авторизация на JWT, каталог товаров и заказы.
+
+    **Авторизация.** `POST /auth/register` и `POST /auth/login` возвращают пару токенов.
+    Access-токен (живёт 15 минут) передаётся в заголовке `Authorization: Bearer <access_token>`,
+    refresh-токен (30 дней) нужен только для `POST /auth/refresh` и `POST /auth/logout`.
+
+    **Роли** хранятся в базе (`users.role`) и проверяются на каждом запросе:
+    - `CUSTOMER` — покупатель. Выдаётся при регистрации. Видит только свои заказы и может их только отменить;
+    - `WAREHOUSE` — сотрудник склада. Назначается только в базе. Ведёт каталог товаров, видит все заказы
+      и проводит их по статусам.
+
+    Без токена — `401`, с токеном другой роли — `403`.
+
+    **Ошибки** возвращаются в стандартном формате Spring (схема `Error`), причина — в поле `message`.
+
+    Подробности о логике — в `README.md`.
+
+servers:
+  - url: http://localhost:8080
+    description: локальный запуск
+
+tags:
+  - name: auth
+    description: регистрация, вход, обновление и отзыв токенов
+  - name: users
+    description: текущий пользователь
+  - name: products
+    description: каталог товаров. Читать может кто угодно, менять — только сотрудник склада (`WAREHOUSE`)
+  - name: orders
+    description: заказы. Покупатель видит свои и может только отменить, склад видит все и проводит по статусам
+
+paths:
+
+  # ===== auth =====
+
+  /auth/register:
+    post:
+      tags: [auth]
+      operationId: register
+      summary: Регистрация
+      description: |
+        Создаёт пользователя и сразу выдаёт пару токенов. Email приводится к нижнему регистру,
+        поэтому `Anton@Example.com` и `anton@example.com` — один пользователь. Пароль хранится как BCrypt-хеш.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: пользователь создан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenPair'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          description: '`User already exists`: такой email уже зарегистрирован'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /auth/login:
+    post:
+      tags: [auth]
+      operationId: login
+      summary: Вход
+      description: |
+        Каждый вход выдаёт отдельную пару токенов, поэтому можно войти с нескольких устройств.
+        Ответ на неизвестный email и неверный пароль одинаковый, чтобы по нему нельзя было узнать,
+        зарегистрирован ли email.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: вход выполнен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenPair'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: '`Invalid email or password`'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /auth/refresh:
+    post:
+      tags: [auth]
+      operationId: refresh
+      summary: Новая пара токенов по refresh-токену
+      description: Старый refresh-токен сразу отзывается, каждый refresh-токен можно использовать один раз.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+      responses:
+        '200':
+          description: новая пара токенов
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenPair'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: |
+            `Token expired`: refresh-токен истёк, нужен новый вход.
+            `Invalid token`: токен подделан, уже использован или передан access-токен вместо refresh.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /auth/logout:
+    post:
+      tags: [auth]
+      operationId: logout
+      summary: Выход
+      description: |
+        Отзывает оба токена пары. Access-токен в заголовке может быть уже истёкшим,
+        но должен принадлежать тому же пользователю, что и refresh-токен.
+        Остальные входы этого пользователя продолжают работать.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+      responses:
+        '204':
+          description: оба токена отозваны
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: |
+            `Missing bearer token`, `Token expired` (истёк refresh-токен), `Invalid token`,
+            `Refresh token belongs to another user`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ===== users =====
+
+  /users/me:
+    get:
+      tags: [users]
+      operationId: getCurrentUser
+      summary: Текущий пользователь
+      description: Пользователь, которому принадлежит access-токен. Хеш пароля в ответ не попадает.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: данные пользователя
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ===== products =====
+
+  /products:
+    get:
+      tags: [products]
+      operationId: listProducts
+      summary: Список товаров
+      description: Все товары, отсортированные по `id`. Пустой каталог — пустой массив.
+      responses:
+        '200':
+          description: список товаров
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Product'
+    post:
+      tags: [products]
+      operationId: createProduct
+      summary: Создать товар
+      description: |
+        Только для сотрудника склада (`WAREHOUSE`). Пробелы по краям `name` обрезаются.
+        Роль проверяется до чтения тела: без прав клиент получает `401`/`403`, а не ошибки валидации.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProductRequest'
+      responses:
+        '201':
+          description: товар создан
+          headers:
+            Location:
+              description: адрес нового товара, `/products/{id}`
+              schema:
+                type: string
+                format: uri
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/WarehouseOnly'
+
+  /products/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ProductId'
+    get:
+      tags: [products]
+      operationId: getProduct
+      summary: Один товар
+      responses:
+        '200':
+          description: товар
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+        '404':
+          $ref: '#/components/responses/ProductNotFound'
+    put:
+      tags: [products]
+      operationId: updateProduct
+      summary: Заменить все поля товара
+      security:
+        - bearerAuth: []
+      description: |
+        Только для сотрудника склада (`WAREHOUSE`).
+        Семантика PUT: заменяются все поля, поэтому в теле нужны все три.
+        Цена в уже оформленных заказах не меняется, там хранится цена на момент заказа.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProductRequest'
+      responses:
+        '200':
+          description: товар обновлён
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/WarehouseOnly'
+        '404':
+          $ref: '#/components/responses/ProductNotFound'
+    delete:
+      tags: [products]
+      operationId: deleteProduct
+      summary: Удалить товар
+      description: Только для сотрудника склада (`WAREHOUSE`). Удаляет навсегда. Товар, который есть хоть в одном заказе, удалить нельзя.
+      security:
+        - bearerAuth: []
+      responses:
+        '204':
+          description: товар удалён
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/WarehouseOnly'
+        '404':
+          $ref: '#/components/responses/ProductNotFound'
+        '409':
+          description: '`Product {id} is used in orders and can''t be deleted`'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ===== orders =====
+
+  /orders:
+    get:
+      tags: [orders]
+      operationId: listOrders
+      summary: Список заказов
+      description: Покупатель получает свои заказы, сотрудник склада — все заказы. Новые сверху.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: список заказов
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Order'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [orders]
+      operationId: createOrder
+      summary: Оформить заказ
+      description: |
+        В одной транзакции, либо всё, либо ничего:
+        1. блокирует строки товаров (`SELECT ... FOR UPDATE`) и проверяет остатки;
+        2. уменьшает `quantity` каждого товара на заказанное количество;
+        3. создаёт заказ в статусе `CREATED`, позиции с текущими ценами товаров и первую запись истории.
+
+        Если хотя бы одного товара не хватает, возвращается `409` и со склада ничего не списывается.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOrderRequest'
+      responses:
+        '201':
+          description: заказ оформлен, товары списаны со склада
+          headers:
+            Location:
+              description: адрес нового заказа, `/orders/{id}`
+              schema:
+                type: string
+                format: uri
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '400':
+          description: |
+            Тело не прошло проверку: пустой список, `quantity` меньше 1 или больше 1000,
+            один товар указан дважды, `Product {id} not found`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: '`Not enough stock for product {id}: requested N, available M`'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /orders/{id}:
+    parameters:
+      - $ref: '#/components/parameters/OrderId'
+    get:
+      tags: [orders]
+      operationId: getOrder
+      summary: Один заказ
+      description: Покупателю доступны только свои заказы (чужой — `404`), складу — любой.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: заказ
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/OrderNotFound'
+
+  /orders/{id}/status:
+    parameters:
+      - $ref: '#/components/parameters/OrderId'
+    patch:
+      tags: [orders]
+      operationId: changeOrderStatus
+      summary: Сменить статус заказа
+      description: |
+        **Кто может:** покупатель — только отменить свой заказ (`CANCELLED`).
+        Сборку и доставку (`PROCESSING`, `READY`, `COMPLETED`) ставит только сотрудник склада, иначе `403`.
+        Склад может и отменить заказ.
+
+        Разрешённые переходы: `CREATED → PROCESSING → READY → COMPLETED`, вперёд только на один шаг.
+        `CANCELLED` — из любого статуса до `COMPLETED`. `COMPLETED` и `CANCELLED` конечные.
+
+        - при переходе в `COMPLETED` заполняется `completed_at`;
+        - отмена (`CANCELLED`) возвращает товары на склад;
+        - каждая смена статуса добавляет запись в историю.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangeOrderStatusRequest'
+      responses:
+        '200':
+          description: заказ с новым статусом
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: '`Only WAREHOUSE can move an order to X, a customer can only cancel it`'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          $ref: '#/components/responses/OrderNotFound'
+        '409':
+          description: '`Can''t change order status from X to Y`: переход не разрешён'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /orders/{id}/history:
+    parameters:
+      - $ref: '#/components/parameters/OrderId'
+    get:
+      tags: [orders]
+      operationId: getOrderHistory
+      summary: История статусов заказа
+      description: |
+        Все смены статуса, старые сверху. Первая запись — создание заказа (`from_status` = `null`).
+        `changed_by` показывает, кто сменил статус: покупатель или сотрудник склада.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: история статусов
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/OrderStatusHistoryEntry'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/OrderNotFound'
+
+components:
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: access-токен из `/auth/login`, `/auth/register` или `/auth/refresh`
+
+  parameters:
+    ProductId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int32
+    OrderId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+
+  responses:
+    BadRequest:
+      description: тело запроса не прошло проверку
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: |
+        `Missing bearer token`: нет заголовка.
+        `Token expired`: access-токен истёк, пора вызвать `/auth/refresh`.
+        `Invalid token`: токен подделан, отозван или передан refresh вместо access.
+        `User not found`: пользователь удалён.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    WarehouseOnly:
+      description: '`Only WAREHOUSE can do this`: у пользователя роль `CUSTOMER`'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    ProductNotFound:
+      description: '`Product {id} not found`'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    OrderNotFound:
+      description: '`Order {id} not found`: заказа нет или покупатель запросил чужой заказ'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+
+    # --- auth and users ---
+
+    RegisterRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 254
+          examples: [anton@example.com]
+        password:
+          type: string
+          minLength: 6
+          maxLength: 100
+          examples: ['123456']
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          minLength: 1
+          examples: [anton@example.com]
+        password:
+          type: string
+          minLength: 1
+          examples: ['123456']
+
+    RefreshRequest:
+      type: object
+      required: [refresh_token]
+      properties:
+        refresh_token:
+          type: string
+          minLength: 1
+
+    TokenPair:
+      type: object
+      required: [access_token, refresh_token]
+      properties:
+        access_token:
+          type: string
+          description: 'JWT, живёт 15 минут, передаётся в `Authorization: Bearer`'
+        refresh_token:
+          type: string
+          description: JWT, живёт 30 дней, одноразовый
+
+    Role:
+      type: string
+      enum: [CUSTOMER, WAREHOUSE]
+      description: |
+        `CUSTOMER` — покупатель, выдаётся при регистрации.
+        `WAREHOUSE` — сотрудник склада, назначается только в базе.
+
+    User:
+      type: object
+      required: [id, email, role, created_at, updated_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+        email:
+          type: string
+          format: email
+          description: в нижнем регистре
+        role:
+          $ref: '#/components/schemas/Role'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    # --- products ---
+
+    ProductRequest:
+      type: object
+      required: [name, quantity, price]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          description: не пустое и не из одних пробелов
+          examples: ['Молоко 3,2%']
+        quantity:
+          type: integer
+          format: int32
+          minimum: 0
+          description: остаток на складе
+          examples: [10]
+        price:
+          type: number
+          minimum: 0
+          maximum: 99999999.99
+          description: не больше двух знаков после запятой
+          examples: [89.90]
+
+    Product:
+      type: object
+      required: [id, name, quantity, price]
+      properties:
+        id:
+          type: integer
+          format: int32
+        name:
+          type: string
+        quantity:
+          type: integer
+          format: int32
+          description: остаток на складе
+        price:
+          type: number
+          description: текущая цена за штуку
+      examples:
+        - id: 1
+          name: 'Молоко 3,2%'
+          quantity: 10
+          price: 89.90
+
+    # --- orders ---
+
+    OrderStatus:
+      type: string
+      enum: [CREATED, PROCESSING, READY, COMPLETED, CANCELLED]
+      description: |
+        `CREATED` — оформлен, `PROCESSING` — собирается, `READY` — собран,
+        `COMPLETED` — выполнен / доставлен, `CANCELLED` — отменён.
+
+    CreateOrderRequest:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          minItems: 1
+          maxItems: 100
+          description: список покупок. Один товар — одна строка
+          items:
+            type: object
+            required: [product_id, quantity]
+            properties:
+              product_id:
+                type: integer
+                format: int32
+              quantity:
+                type: integer
+                format: int32
+                minimum: 1
+                maximum: 1000
+      examples:
+        - items:
+            - product_id: 1
+              quantity: 2
+            - product_id: 7
+              quantity: 1
+
+    ChangeOrderStatusRequest:
+      type: object
+      required: [status]
+      properties:
+        status:
+          $ref: '#/components/schemas/OrderStatus'
+
+    OrderItem:
+      type: object
+      required: [product_id, name, quantity, price, amount]
+      properties:
+        product_id:
+          type: integer
+          format: int32
+        name:
+          type: string
+          description: текущее название товара
+        quantity:
+          type: integer
+          format: int32
+        price:
+          type: number
+          description: цена за штуку на момент заказа
+        amount:
+          type: number
+          description: '`price × quantity`'
+
+    Order:
+      type: object
+      required: [id, user_id, status, items, total, created_at, completed_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+        user_id:
+          type: integer
+          format: int64
+        status:
+          $ref: '#/components/schemas/OrderStatus'
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrderItem'
+        total:
+          type: number
+          description: сумма `amount` всех позиций
+        created_at:
+          type: string
+          format: date-time
+          description: момент покупки
+        completed_at:
+          type: [string, 'null']
+          format: date-time
+          description: заполнен только у заказов в статусе `COMPLETED`
+      examples:
+        - id: 1
+          user_id: 5
+          status: CREATED
+          items:
+            - product_id: 1
+              name: 'Молоко 3,2%'
+              quantity: 2
+              price: 79.90
+              amount: 159.80
+            - product_id: 7
+              name: 'Хлеб Бородинский, 400 г'
+              quantity: 1
+              price: 59.00
+              amount: 59.00
+          total: 218.80
+          created_at: '2026-11-01T19:50:00Z'
+          completed_at: null
+
+    OrderStatusHistoryEntry:
+      type: object
+      required: [from_status, to_status, changed_at, changed_by]
+      properties:
+        from_status:
+          description: прежний статус, `null` у первой записи (создание заказа)
+          oneOf:
+            - $ref: '#/components/schemas/OrderStatus'
+            - type: 'null'
+        to_status:
+          $ref: '#/components/schemas/OrderStatus'
+        changed_at:
+          type: string
+          format: date-time
+        changed_by:
+          type: [integer, 'null']
+          format: int64
+          description: кто изменил; `null` зарезервирован для изменений, которые сделает система
+
+    Error:
+      type: object
+      description: стандартный формат ошибки Spring Boot
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        status:
+          type: integer
+        error:
+          type: string
+          examples: [Unauthorized]
+        message:
+          type: string
+          examples: [Invalid email or password]
+        path:
+          type: string
+          examples: [/auth/login]
