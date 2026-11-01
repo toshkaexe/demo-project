@@ -40,3 +40,37 @@ Content-Type: application/json
 {
   "refresh_token": "{{refresh_token}}"
 }
+
+
+### 6. Products: list all
+GET http://localhost:8080/products
+
+
+### 7. Products: one by id (404 if there is none)
+GET http://localhost:8080/products/1
+
+
+### 8. Products: create -> 201 + Location: /products/{id}
+POST http://localhost:8080/products
+Content-Type: application/json
+
+{
+  "name": "Kefir 1%",
+  "quantity": 7,
+  "price": 40.00
+}
+
+
+### 9. Products: update, replaces all fields (PUT) -> 200 or 404
+PUT http://localhost:8080/products/1
+Content-Type: application/json
+
+{
+  "name": "Kefir 2.5%",
+  "quantity": 17,
+  "price": 100.00
+}
+
+
+### 10. Products: delete -> 204 or 404
+DELETE http://localhost:8080/products/1
