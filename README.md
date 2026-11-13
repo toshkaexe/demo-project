@@ -12,13 +12,27 @@
 
 ## Запуск
 
+Всё в Docker (приложение и Postgres):
+
 ```bash
 cp .env.example .env              # затем вставить ключ: openssl rand -base64 48
-docker compose up -d              # Postgres на localhost:5432
+docker compose up -d --build      # Postgres + приложение на http://localhost:8080
+docker compose logs -f app        # логи приложения
+docker compose down               # остановить (данные БД сохраняются в volume)
+```
+
+- Образ собирается из `Dockerfile` в два этапа: JDK 21 + Maven wrapper собирают jar (без тестов), в итоговый образ попадают только JRE 21 и jar. После изменений в коде пересобрать: `docker compose up -d --build app`.
+- Приложение в контейнере ходит в базу по адресу `postgres:5432` (переменные `SPRING_DATASOURCE_*` в `docker-compose.yaml`), `JWT_SECRET` берётся из `.env`. Без него `docker compose up` сразу падает с понятной ошибкой.
+- Если порт 8080 занят (например, приложение запущено ещё и из IDE): `APP_PORT=8090 docker compose up -d`.
+
+Для разработки из IDE можно поднять только базу:
+
+```bash
+docker compose up -d postgres     # Postgres на localhost:5432
 ./mvnw spring-boot:run            # приложение на http://localhost:8080
 ```
 
-- **Docker Desktop должен быть запущен** до `docker compose up` и до запуска приложения. Иначе приложение падает при старте с `Connection to localhost:5432 refused`: базы нет, и Liquibase не может к ней подключиться. После перезагрузки компьютера: запустить Docker Desktop → `docker compose up -d` → приложение. Данные лежат в volume `postgres-data` и переживают перезапуски.
+- **Docker Desktop должен быть запущен** до `docker compose up` и до запуска приложения. Иначе приложение падает при старте с `Connection to localhost:5432 refused`: базы нет, и Liquibase не может к ней подключиться. После перезагрузки компьютера: запустить Docker Desktop → `docker compose up -d`. Данные лежат в volume `postgres-data` и переживают перезапуски.
 
 - **`.env`** хранит `JWT_SECRET`, ключ подписи токенов длиной не меньше 32 байт. Файл не коммитится. Без него приложение не стартует.
 - **Схему БД** создаёт Liquibase при старте приложения (`src/main/resources/db/changelog`).
