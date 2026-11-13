@@ -202,32 +202,42 @@ class OrderControllerTest {
         Long warehouseId = userRepository.findByEmail("warehouse@example.com").orElseThrow().getId();
         Long id = createAndGetId(token, items(milk, 1));
         changeStatus(warehouse, id, "PROCESSING").andExpect(status().isOk());
-        changeStatus(token, id, "CANCELLED").andExpect(status().isOk());
+        changeStatus(warehouse, id, "READY").andExpect(status().isOk());
+        changeStatus(warehouse, id, "COMPLETED").andExpect(status().isOk());
 
         mvc.perform(get("/orders/{id}/history", id).header("Authorization", "Bearer " + token))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.length()").value(3))
+                .andExpect(jsonPath("$.length()").value(4))
                 .andExpect(jsonPath("$[0].from_status").doesNotExist())
                 .andExpect(jsonPath("$[0].to_status").value("CREATED"))
+                .andExpect(jsonPath("$[0].changed_by").value(userId))
                 .andExpect(jsonPath("$[1].from_status").value("CREATED"))
                 .andExpect(jsonPath("$[1].to_status").value("PROCESSING"))
                 .andExpect(jsonPath("$[1].changed_by").value(warehouseId))
                 .andExpect(jsonPath("$[2].from_status").value("PROCESSING"))
-                .andExpect(jsonPath("$[2].to_status").value("CANCELLED"))
-                .andExpect(jsonPath("$[2].changed_by").value(userId))
-                .andExpect(jsonPath("$[2].changed_at").isNotEmpty());
+                .andExpect(jsonPath("$[2].to_status").value("READY"))
+                .andExpect(jsonPath("$[3].from_status").value("READY"))
+                .andExpect(jsonPath("$[3].to_status").value("COMPLETED"))
+                .andExpect(jsonPath("$[3].changed_by").value(warehouseId))
+                .andExpect(jsonPath("$[3].changed_at").isNotEmpty());
     }
 
     @Test
     void cancelReturnsItemsToStock() throws Exception {
+        Long userId = userRepository.findByEmail("anton@example.com").orElseThrow().getId();
         Long id = createAndGetId(token, items(milk, 3, bread, 2));
-        changeStatus(warehouse, id, "PROCESSING").andExpect(status().isOk());
+        assertThat(stock(milk)).isEqualTo(7);
 
         changeStatus(token, id, "CANCELLED").andExpect(status().isOk()).andExpect(jsonPath("$.completed_at").doesNotExist());
 
         assertThat(orderRepository.findById(id).orElseThrow().getStatus()).isEqualTo(OrderStatus.CANCELLED);
         assertThat(stock(milk)).isEqualTo(10);
         assertThat(stock(bread)).isEqualTo(5);
+        mvc.perform(get("/orders/{id}/history", id).header("Authorization", "Bearer " + token))
+                .andExpect(jsonPath("$.length()").value(2))
+                .andExpect(jsonPath("$[1].from_status").value("CREATED"))
+                .andExpect(jsonPath("$[1].to_status").value("CANCELLED"))
+                .andExpect(jsonPath("$[1].changed_by").value(userId));
     }
 
     @Test
@@ -245,6 +255,27 @@ class OrderControllerTest {
     }
 
     @Test
+    void orderCannotBeCancelledAfterAssemblingStarted() throws Exception {
+        Long id = createAndGetId(token, items(milk, 2));
+
+        changeStatus(warehouse, id, "PROCESSING").andExpect(status().isOk());
+        changeStatus(token, id, "CANCELLED").andExpect(status().isConflict())
+                .andExpect(status().reason("Can't change order status from PROCESSING to CANCELLED"));
+        changeStatus(warehouse, id, "CANCELLED").andExpect(status().isConflict());  // the warehouse can't either
+
+        changeStatus(warehouse, id, "READY").andExpect(status().isOk());
+        changeStatus(token, id, "CANCELLED").andExpect(status().isConflict());
+        changeStatus(warehouse, id, "CANCELLED").andExpect(status().isConflict());
+
+        changeStatus(warehouse, id, "COMPLETED").andExpect(status().isOk());
+        changeStatus(warehouse, id, "CREATED").andExpect(status().isConflict());    // COMPLETED is final
+
+        // nothing came back to stock: the customer got the milk
+        assertThat(stock(milk)).isEqualTo(8);
+        assertThat(orderRepository.findById(id).orElseThrow().getStatus()).isEqualTo(OrderStatus.COMPLETED);
+    }
+
+    @Test
     void customerCanOnlyCancel() throws Exception {
         Long id = createAndGetId(token, items(milk, 1));
 
@@ -253,13 +284,14 @@ class OrderControllerTest {
                 .andExpect(status().reason("Only WAREHOUSE can move an order to PROCESSING, a customer can only cancel it"));
         assertThat(orderRepository.findById(id).orElseThrow().getStatus()).isEqualTo(OrderStatus.CREATED);
 
-        changeStatus(warehouse, id, "PROCESSING").andExpect(status().isOk());
-        changeStatus(warehouse, id, "READY").andExpect(status().isOk());
-        changeStatus(token, id, "COMPLETED").andExpect(status().isForbidden());
         changeStatus(token, id, "CANCELLED").andExpect(status().isOk());
-
         assertThat(orderRepository.findById(id).orElseThrow().getStatus()).isEqualTo(OrderStatus.CANCELLED);
         assertThat(stock(milk)).isEqualTo(10);
+
+        Long assembling = createAndGetId(token, items(milk, 1));
+        changeStatus(warehouse, assembling, "PROCESSING").andExpect(status().isOk());
+        changeStatus(warehouse, assembling, "READY").andExpect(status().isOk());
+        changeStatus(token, assembling, "COMPLETED").andExpect(status().isForbidden());
     }
 
     @Test

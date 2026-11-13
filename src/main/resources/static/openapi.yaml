@@ -408,7 +408,8 @@ paths:
         Склад может и отменить заказ.
 
         Разрешённые переходы: `CREATED → PROCESSING → READY → COMPLETED`, вперёд только на один шаг.
-        `CANCELLED` — из любого статуса до `COMPLETED`. `COMPLETED` и `CANCELLED` конечные.
+        `CANCELLED` — **только из `CREATED`**, пока склад не начал сборку: из `PROCESSING` и `READY` отмена даёт `409`.
+        `COMPLETED` и `CANCELLED` конечные.
 
         - при переходе в `COMPLETED` заполняется `completed_at`;
         - отмена (`CANCELLED`) возвращает товары на склад;
@@ -666,6 +667,9 @@ components:
       description: |
         `CREATED` — оформлен, `PROCESSING` — собирается, `READY` — собран,
         `COMPLETED` — выполнен / доставлен, `CANCELLED` — отменён.
+
+        Переходы: `CREATED → PROCESSING`, `CREATED → CANCELLED`, `PROCESSING → READY`, `READY → COMPLETED`.
+        Остальные запрещены.
 
     CreateOrderRequest:
       type: object

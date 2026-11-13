@@ -5,7 +5,11 @@ import java.util.Optional;
 
 import demo.lavka.entity.Orders;
 import org.springframework.data.jpa.repository.EntityGraph;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 public interface OrderRepository extends JpaRepository<Orders, Long> {
 
@@ -22,6 +26,18 @@ public interface OrderRepository extends JpaRepository<Orders, Long> {
     // for the warehouse: any order
     @EntityGraph(attributePaths = {"items", "items.product"})
     Optional<Orders> findWithItemsById(Long id);
+
+    /**
+     * {@code SELECT ... FOR UPDATE} on the order row, for status changes: a second change of the same order waits
+     * until the first one commits and then reads the new status. Without it two cancels both see READY and both
+     * return the items to stock.
+     * <p>
+     * No entity graph here: PostgreSQL can't lock the nullable side of the outer join that fetching items needs.
+     * Items are loaded after the lock, in the same transaction.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select o from Orders o where o.id = :id")
+    Optional<Orders> findByIdForUpdate(@Param("id") Long id);
 
     // an order of another user is "not found": the client can't tell whether it exists
     @EntityGraph(attributePaths = {"items", "items.product"})

@@ -1,6 +1,5 @@
 package demo.lavka.service;
 
-import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -29,10 +28,6 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 import static demo.lavka.entity.OrderStatus.CANCELLED;
-import static demo.lavka.entity.OrderStatus.COMPLETED;
-import static demo.lavka.entity.OrderStatus.CREATED;
-import static demo.lavka.entity.OrderStatus.PROCESSING;
-import static demo.lavka.entity.OrderStatus.READY;
 
 /**
  * Who may do what, by the role of the user from the access token:
@@ -47,16 +42,6 @@ public class OrderService {
 
     private static final Logger log = LoggerFactory.getLogger(OrderService.class);
 
-    /**
-     * Allowed status changes: forward one step at a time, or cancel until the order is completed.
-     * COMPLETED and CANCELLED are final.
-     */
-    private static final Map<OrderStatus, Set<OrderStatus>> TRANSITIONS = Map.of(
-            CREATED, EnumSet.of(PROCESSING, CANCELLED),
-            PROCESSING, EnumSet.of(READY, CANCELLED),
-            READY, EnumSet.of(COMPLETED, CANCELLED),
-            COMPLETED, EnumSet.noneOf(OrderStatus.class),
-            CANCELLED, EnumSet.noneOf(OrderStatus.class));
 
     private final OrderRepository orderRepository;
     private final UserRepository userRepository;
@@ -132,17 +117,25 @@ public class OrderService {
 
     /**
      * Needs the transaction: the order is changed in place and dirty checking writes it on commit.
+     * <p>
+     * The order row is locked first ({@code FOR UPDATE}), so parallel changes of one order run one after another:
+     * the second one reads the status the first one wrote. Without the lock two cancels both pass the transition
+     * check and return the items to stock twice. Lock order is always order, then products by id, and placing
+     * an order locks only products, so there is no deadlock.
      */
     @Transactional
     public OrderResponse changeStatus(User actor, Long orderId, OrderStatus newStatus) {
-        Orders order = getOrThrow(actor, orderId);
+        Orders order = orderRepository.findByIdForUpdate(orderId)
+                .filter(found -> canSee(actor, found))
+                .orElseThrow(() -> notFound(orderId));
         // assembling and delivering is the warehouse's job, a customer can only cancel
         if (actor.getRole() != Role.WAREHOUSE && newStatus != CANCELLED) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN,
                     "Only " + Role.WAREHOUSE + " can move an order to " + newStatus + ", a customer can only cancel it");
         }
         OrderStatus current = order.getStatus();
-        if (!TRANSITIONS.get(current).contains(newStatus)) {
+        // the allowed transitions are defined in OrderStatus
+        if (!current.canChangeTo(newStatus)) {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                     "Can't change order status from " + current + " to " + newStatus);
         }
@@ -168,8 +161,16 @@ public class OrderService {
         Optional<Orders> order = actor.getRole() == Role.WAREHOUSE
                 ? orderRepository.findWithItemsById(orderId)
                 : orderRepository.findByIdAndUserId(orderId, actor.getId());
-        return order
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Order " + orderId + " not found"));
+        return order.orElseThrow(() -> notFound(orderId));
+    }
+
+    // the warehouse sees every order, a customer only own ones
+    private static boolean canSee(User actor, Orders order) {
+        return actor.getRole() == Role.WAREHOUSE || order.getUser().getId().equals(actor.getId());
+    }
+
+    private static ResponseStatusException notFound(Long orderId) {
+        return new ResponseStatusException(HttpStatus.NOT_FOUND, "Order " + orderId + " not found");
     }
 
 }

@@ -511,7 +511,7 @@ Content-Type: application/json
 
 
 ### 32. Orders: the warehouse starts assembling -> 200
-# CREATED -> PROCESSING -> READY -> COMPLETED, CANCELLED from any status before COMPLETED (returns items to stock)
+# CREATED -> PROCESSING -> READY -> COMPLETED; CANCELLED only from CREATED (returns items to stock)
 PATCH {{host}}/orders/{{order_id}}/status
 Authorization: Bearer {{warehouse_token}}
 Content-Type: application/json
@@ -571,7 +571,7 @@ Authorization: Bearer {{warehouse_token}}
 %}
 
 
-### 36. Orders: the customer cancels -> 200, the items go back to stock
+### 36. Orders: after assembling started the order can't be cancelled -> 409 (even by the customer who placed it)
 PATCH {{host}}/orders/{{order_id}}/status
 Authorization: Bearer {{access_token}}
 Content-Type: application/json
@@ -581,7 +581,133 @@ Content-Type: application/json
 }
 
 > {%
-    client.test("CANCELLED: 200", () => {
+    client.test("PROCESSING -> CANCELLED: 409", () => {
+        client.assert(response.status === 409, "status " + response.status);
+    });
+%}
+
+
+### 37. Orders: the warehouse marks the order assembled -> 200
+PATCH {{host}}/orders/{{order_id}}/status
+Authorization: Bearer {{warehouse_token}}
+Content-Type: application/json
+
+{
+  "status": "READY"
+}
+
+> {%
+    client.test("READY: 200", () => {
+        client.assert(response.status === 200, "status " + response.status);
+        client.assert(response.body.status === "READY", "status " + response.body.status);
+    });
+%}
+
+
+### 38. Orders: READY can't be cancelled either -> 409
+PATCH {{host}}/orders/{{order_id}}/status
+Authorization: Bearer {{warehouse_token}}
+Content-Type: application/json
+
+{
+  "status": "CANCELLED"
+}
+
+> {%
+    client.test("READY -> CANCELLED: 409", () => {
+        client.assert(response.status === 409, "status " + response.status);
+    });
+%}
+
+
+### 39. Orders: the warehouse completes the order -> 200, completed_at is set
+PATCH {{host}}/orders/{{order_id}}/status
+Authorization: Bearer {{warehouse_token}}
+Content-Type: application/json
+
+{
+  "status": "COMPLETED"
+}
+
+> {%
+    client.test("COMPLETED: 200 and completed_at", () => {
+        client.assert(response.status === 200, "status " + response.status);
+        client.assert(response.body.status === "COMPLETED", "status " + response.body.status);
+        client.assert(response.body.completed_at, "completed_at is empty");
+    });
+%}
+
+
+### 40. Orders: COMPLETED is final -> 409
+PATCH {{host}}/orders/{{order_id}}/status
+Authorization: Bearer {{warehouse_token}}
+Content-Type: application/json
+
+{
+  "status": "CREATED"
+}
+
+> {%
+    client.test("COMPLETED -> CREATED: 409", () => {
+        client.assert(response.status === 409, "status " + response.status);
+    });
+%}
+
+
+### 41. Products: a completed order keeps its items taken (still 10 - 2)
+GET {{host}}/products/{{product_id}}
+
+> {%
+    client.test("completed order did not return stock", () => {
+        client.assert(response.body.quantity === 8, "quantity " + response.body.quantity);
+    });
+%}
+
+
+### 42. Orders: status history, oldest first
+GET {{host}}/orders/{{order_id}}/history
+Authorization: Bearer {{access_token}}
+
+> {%
+    client.test("history: CREATED -> PROCESSING -> READY -> COMPLETED", () => {
+        client.assert(response.status === 200, "status " + response.status);
+        const steps = response.body.map(h => (h.from_status || "null") + "->" + h.to_status);
+        client.assert(steps.join(", ") === "null->CREATED, CREATED->PROCESSING, PROCESSING->READY, READY->COMPLETED",
+            "history " + steps.join(", "));
+        client.assert(response.body[0].changed_by === client.global.get("user_id"), "CREATED by " + response.body[0].changed_by);
+        client.assert(response.body[3].changed_by === client.global.get("warehouse_id"), "COMPLETED by " + response.body[3].changed_by);
+    });
+%}
+
+
+### 43. Orders: a second order, to cancel it before assembling
+POST {{host}}/orders
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "items": [{ "product_id": {{product_id}}, "quantity": 1 }]
+}
+
+> {%
+    client.test("second order: 201", () => {
+        client.assert(response.status === 201, "status " + response.status);
+    });
+    client.global.set("order2_id", response.body.id);
+%}
+
+
+### 44. Orders: the customer cancels while the order is CREATED -> 200, the items go back to stock
+PATCH {{host}}/orders/{{order2_id}}/status
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "status": "CANCELLED"
+}
+
+> {%
+    client.test("CREATED -> CANCELLED: 200", () => {
         client.assert(response.status === 200, "status " + response.status);
         client.assert(response.body.status === "CANCELLED", "status " + response.body.status);
         client.assert(response.body.completed_at == null, "completed_at " + response.body.completed_at);
@@ -589,18 +715,18 @@ Content-Type: application/json
 %}
 
 
-### 37. Products: stock is back after the cancel (8 + 2)
+### 45. Products: stock is back after the cancel (8 - 1 + 1)
 GET {{host}}/products/{{product_id}}
 
 > {%
     client.test("cancel returned the items to stock", () => {
-        client.assert(response.body.quantity === 10, "quantity " + response.body.quantity);
+        client.assert(response.body.quantity === 8, "quantity " + response.body.quantity);
     });
 %}
 
 
-### 38. Orders: CANCELLED is final -> 409
-PATCH {{host}}/orders/{{order_id}}/status
+### 46. Orders: CANCELLED is final -> 409
+PATCH {{host}}/orders/{{order2_id}}/status
 Authorization: Bearer {{warehouse_token}}
 Content-Type: application/json
 
@@ -609,29 +735,26 @@ Content-Type: application/json
 }
 
 > {%
-    client.test("change after CANCELLED: 409", () => {
+    client.test("CANCELLED -> PROCESSING: 409", () => {
         client.assert(response.status === 409, "status " + response.status);
     });
 %}
 
 
-### 39. Orders: status history, oldest first
-GET {{host}}/orders/{{order_id}}/history
+### 47. Orders: history of the cancelled order
+GET {{host}}/orders/{{order2_id}}/history
 Authorization: Bearer {{access_token}}
 
 > {%
-    client.test("history: CREATED -> PROCESSING -> CANCELLED", () => {
-        client.assert(response.status === 200, "status " + response.status);
+    client.test("history: CREATED -> CANCELLED by the customer", () => {
         const steps = response.body.map(h => (h.from_status || "null") + "->" + h.to_status);
-        client.assert(steps.join(", ") === "null->CREATED, CREATED->PROCESSING, PROCESSING->CANCELLED",
-            "history " + steps.join(", "));
-        client.assert(response.body[1].changed_by === client.global.get("warehouse_id"), "PROCESSING by " + response.body[1].changed_by);
-        client.assert(response.body[2].changed_by === client.global.get("user_id"), "CANCELLED by " + response.body[2].changed_by);
+        client.assert(steps.join(", ") === "null->CREATED, CREATED->CANCELLED", "history " + steps.join(", "));
+        client.assert(response.body[1].changed_by === client.global.get("user_id"), "CANCELLED by " + response.body[1].changed_by);
     });
 %}
 
 
-### 40. Orders: unknown or someone else's order -> 404
+### 48. Orders: unknown or someone else's order -> 404
 GET {{host}}/orders/9000000000000
 Authorization: Bearer {{access_token}}
 
@@ -644,7 +767,7 @@ Authorization: Bearer {{access_token}}
 
 ### ===== Delete =====
 
-### 41. Products: a product that was never ordered
+### 49. Products: a product that was never ordered
 POST {{host}}/products
 Authorization: Bearer {{warehouse_token}}
 Content-Type: application/json
@@ -663,7 +786,7 @@ Content-Type: application/json
 %}
 
 
-### 42. Products: delete -> 204
+### 50. Products: delete -> 204
 DELETE {{host}}/products/{{temp_product_id}}
 Authorization: Bearer {{warehouse_token}}
 
@@ -674,7 +797,7 @@ Authorization: Bearer {{warehouse_token}}
 %}
 
 
-### 43. Products: deleted product is gone -> 404
+### 51. Products: deleted product is gone -> 404
 GET {{host}}/products/{{temp_product_id}}
 
 > {%
@@ -686,7 +809,7 @@ GET {{host}}/products/{{temp_product_id}}
 
 ### ===== Logout =====
 
-### 44. Logout: revokes both tokens -> 204
+### 52. Logout: revokes both tokens -> 204
 POST {{host}}/auth/logout
 Authorization: Bearer {{access_token}}
 Content-Type: application/json
@@ -702,7 +825,7 @@ Content-Type: application/json
 %}
 
 
-### 45. The revoked access token no longer works -> 401
+### 53. The revoked access token no longer works -> 401
 GET {{host}}/users/me
 Authorization: Bearer {{access_token}}
 
