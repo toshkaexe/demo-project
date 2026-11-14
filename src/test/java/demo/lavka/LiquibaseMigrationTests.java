@@ -42,7 +42,7 @@ class LiquibaseMigrationTests {
         assertThat(applied).containsExactly(
                 "001-create-users-table", "002-create-products-table", "003-create-orders-table",
                 "004-create-order-items-table", "004-create-order-status-history-table",
-                "005-users-role-check");
+                "005-users-role-check", "006-create-user-addresses-table");
     }
 
     @Test
@@ -260,6 +260,58 @@ class LiquibaseMigrationTests {
         jdbc.update("update users set role = 'WAREHOUSE' where id = ?", userId);
         assertThatThrownBy(() -> jdbc.update("update users set role = 'ADMIN' where id = ?", userId))
                 .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void userAddressesTableHasExpectedColumns() {
+        assertThat(columnsOf("user_addresses")).containsExactly(
+                "id bigint NO",
+                "user_id bigint NO",
+                "postal_code character varying NO",
+                "country character varying NO",
+                "city character varying NO",
+                "street character varying NO",
+                "house character varying NO",
+                "apartment character varying YES",
+                "recipient_name character varying NO",
+                "courier_note character varying YES",
+                "created_at timestamp with time zone NO",
+                "updated_at timestamp with time zone NO");
+    }
+
+    @Test
+    void userCanHaveSeveralAddressesAndTheyAreDeletedWithUser() {
+        long userId = insertUser("anton@example.com");
+        insertAddress(userId, "1");
+        insertAddress(userId, "2");
+
+        assertThat(jdbc.queryForObject("select count(*) from user_addresses where user_id = ?", Integer.class, userId))
+                .isEqualTo(2);
+
+        jdbc.update("delete from users where id = ?", userId);
+        assertThat(jdbc.queryForObject("select count(*) from user_addresses", Integer.class)).isZero();
+    }
+
+    @Test
+    void addressRequiresExistingUserAndNonBlankFields() {
+        long userId = insertUser("anton@example.com");
+
+        assertThatThrownBy(() -> insertAddress(-1, "1"))
+                .isInstanceOf(DataIntegrityViolationException.class);
+        assertThatThrownBy(() -> insertAddress(userId, " "))
+                .isInstanceOf(DataIntegrityViolationException.class);
+        assertThatThrownBy(() -> jdbc.update("""
+                insert into user_addresses (user_id, postal_code, country, city, street, house, apartment, recipient_name)
+                values (?, '101000', 'Россия', 'Москва', 'Тверская', '1', '', 'Антон Иванов')
+                """, userId))
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    private void insertAddress(long userId, String house) {
+        jdbc.update("""
+                insert into user_addresses (user_id, postal_code, country, city, street, house, recipient_name)
+                values (?, '101000', 'Россия', 'Москва', 'Тверская', ?, 'Антон Иванов')
+                """, userId, house);
     }
 
     private List<String> columnsOf(String table) {
