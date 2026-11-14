@@ -12,6 +12,8 @@ import demo.lavka.entity.Orders;
 public record OrderResponse(
         Long id,
         @JsonProperty("user_id") Long userId,
+        // who placed the order, for the warehouse
+        @JsonProperty("user_email") String userEmail,
         OrderStatus status,
         List<Item> items,
         BigDecimal total,
@@ -22,7 +24,7 @@ public record OrderResponse(
      * Reads items and their products: call it inside a transaction.
      */
     public static OrderResponse from(Orders order) {
-        return new OrderResponse(order.getId(), order.getUser().getId(), order.getStatus(),
+        return new OrderResponse(order.getId(), order.getUser().getId(), order.getUser().getEmail(), order.getStatus(),
                 order.getItems().stream().map(Item::from).toList(), order.getTotal(),
                 order.getCreatedAt(), order.getCompletedAt());
     }

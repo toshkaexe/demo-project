@@ -728,7 +728,7 @@ components:
 
     Order:
       type: object
-      required: [id, user_id, status, items, total, created_at, completed_at]
+      required: [id, user_id, user_email, status, items, total, created_at, completed_at]
       properties:
         id:
           type: integer
@@ -756,6 +756,7 @@ components:
       examples:
         - id: 1
           user_id: 5
+          user_email: customer1@gmail.com
           status: CREATED
           items:
             - product_id: 1

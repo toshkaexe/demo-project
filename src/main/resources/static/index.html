@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Лавка</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #fff; --text: #1d2330; --muted: #6b7280; --line: #e3e6eb;
+    --accent: #2f6fed; --accent-text: #fff; --danger: #d93838; --ok: #1f9d55;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171c; --card: #1d2128; --text: #e7e9ee; --muted: #9aa1ad; --line: #2c313a;
+      --accent: #5b8cff; --accent-text: #0b0d10; --danger: #ff6b6b; --ok: #4ade80;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+  header { display: flex; align-items: center; gap: 16px; padding: 12px 16px; background: var(--card); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  header h1 { margin: 0; font-size: 20px; }
+  nav { display: flex; gap: 4px; flex-wrap: wrap; }
+  nav button { background: none; color: var(--text); border: none; padding: 6px 10px; border-radius: 6px; cursor: pointer; font: inherit; }
+  nav button.active { background: var(--bg); font-weight: 600; }
+  .spacer { flex: 1; }
+  main { max-width: 960px; margin: 0 auto; padding: 16px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+  h2 { margin: 0 0 12px; font-size: 18px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  th { color: var(--muted); font-weight: 500; font-size: 13px; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .table-wrap { overflow-x: auto; }
+  input, select { font: inherit; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); }
+  input[type=number] { width: 80px; }
+  button.btn { font: inherit; padding: 7px 12px; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--text); cursor: pointer; }
+  button.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+  button.btn.danger { color: var(--danger); }
+  button.btn:disabled { opacity: .5; cursor: default; }
+  form.row, .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .muted { color: var(--muted); }
+  .auth { max-width: 360px; margin: 40px auto; }
+  .auth form { display: grid; gap: 10px; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; background: var(--bg); border: 1px solid var(--line); }
+  .badge.CREATED { color: var(--accent); }
+  .badge.PROCESSING, .badge.READY { color: #c47f00; }
+  .badge.COMPLETED { color: var(--ok); }
+  .badge.CANCELLED { color: var(--danger); }
+  .order { border-top: 1px solid var(--line); padding: 12px 0; }
+  .order:first-of-type { border-top: none; }
+  .order-head { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .order ul { margin: 6px 0; padding-left: 20px; }
+  #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 8px; display: none; max-width: calc(100% - 32px); }
+  #toast.error { background: var(--danger); color: #fff; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Лавка</h1>
+  <nav id="nav"></nav>
+  <span class="spacer"></span>
+  <span id="who" class="muted"></span>
+  <button id="logout" class="btn" hidden>Выйти</button>
+</header>
+<main id="app"></main>
+<div id="toast"></div>
+
+<script>
+const STATUS = {
+  CREATED: 'Оформлен', PROCESSING: 'Собирается', READY: 'Собран', COMPLETED: 'Выполнен', CANCELLED: 'Отменён'
+};
+// the same transitions as OrderStatus.nextStatuses() on the backend
+const NEXT = { CREATED: ['PROCESSING', 'CANCELLED'], PROCESSING: ['READY'], READY: ['COMPLETED'], COMPLETED: [], CANCELLED: [] };
+
+const state = { user: null, products: [], cart: {}, tab: 'catalog' };
+const $app = document.getElementById('app');
+
+// ---------- API ----------
+const tokens = {
+  get access() { return localStorage.getItem('access_token'); },
+  get refresh() { return localStorage.getItem('refresh_token'); },
+  set(pair) { localStorage.setItem('access_token', pair.access_token); localStorage.setItem('refresh_token', pair.refresh_token); },
+  clear() { localStorage.removeItem('access_token'); localStorage.removeItem('refresh_token'); }
+};
+
+async function api(method, path, body, retry = true) {
+  const headers = {};
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  if (tokens.access) headers['Authorization'] = 'Bearer ' + tokens.access;
+  const res = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+
+  // the access token lives 15 minutes: get a new pair once and repeat the request
+  if (res.status === 401 && retry && tokens.refresh && !path.startsWith('/auth/')) {
+    const r = await fetch('/auth/refresh', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token: tokens.refresh })
+    });
+    if (r.ok) { tokens.set(await r.json()); return api(method, path, body, false); }
+    tokens.clear(); state.user = null; render();
+    throw new Error('Сессия истекла, войдите снова');
+  }
+  if (!res.ok) {
+    let msg = res.status + ' ' + res.statusText;
+    try { const e = await res.json(); if (e.message) msg = e.message; } catch {}
+    throw new Error(msg);
+  }
+  return res.status === 204 ? null : res.json();
+}
+
+// ---------- helpers ----------
+function toast(text, isError) {
+  const t = document.getElementById('toast');
+  t.textContent = text; t.className = isError ? 'error' : ''; t.style.display = 'block';
+  clearTimeout(t._timer); t._timer = setTimeout(() => t.style.display = 'none', 3500);
+}
+const money = v => Number(v).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ₽';
+const date = v => v ? new Date(v).toLocaleString('ru-RU') : '';
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const badge = s => `<span class="badge ${s}">${STATUS[s] || s}</span>`;
+const isWarehouse = () => state.user && state.user.role === 'WAREHOUSE';
+async function run(fn) { try { await fn(); } catch (e) { toast(e.message, true); } }
+
+// ---------- layout ----------
+function renderHeader() {
+  const nav = document.getElementById('nav');
+  document.getElementById('logout').hidden = !state.user;
+  document.getElementById('who').textContent = state.user
+    ? state.user.email + (isWarehouse() ? ' · склад' : '') : '';
+  if (!state.user) { nav.innerHTML = ''; return; }
+  const tabs = [['catalog', 'Каталог'], ['cart', 'Корзина' + cartBadge()], ['orders', isWarehouse() ? 'Все заказы' : 'Мои заказы']];
+  if (isWarehouse()) tabs.push(['admin', 'Товары']);
+  nav.innerHTML = tabs.map(([id, title]) =>
+    `<button data-tab="${id}" class="${state.tab === id ? 'active' : ''}">${title}</button>`).join('');
+}
+function cartBadge() {
+  const n = Object.values(state.cart).reduce((a, b) => a + b, 0);
+  return n ? ` (${n})` : '';
+}
+
+function render() {
+  renderHeader();
+  if (!state.user) return renderAuth();
+  ({ catalog: renderCatalog, cart: renderCart, orders: renderOrders, admin: renderAdmin })[state.tab]();
+}
+
+document.getElementById('nav').addEventListener('click', e => {
+  const tab = e.target.dataset.tab;
+  if (tab) { state.tab = tab; render(); }
+});
+document.getElementById('logout').addEventListener('click', () => run(async () => {
+  try { await api('POST', '/auth/logout', { refresh_token: tokens.refresh }); } catch {}
+  tokens.clear(); state.user = null; state.cart = {}; state.tab = 'catalog'; render();
+}));
+
+// ---------- auth ----------
+function renderAuth() {
+  $app.innerHTML = `
+    <div class="card auth">
+      <h2>Вход</h2>
+      <form id="auth-form">
+        <input name="email" type="email" placeholder="Email" required autocomplete="username">
+        <input name="password" type="password" placeholder="Пароль (не меньше 6 символов)" required autocomplete="current-password">
+        <button class="btn primary" name="action" value="login">Войти</button>
+        <button class="btn" name="action" value="register">Зарегистрироваться</button>
+      </form>
+    </div>`;
+  document.getElementById('auth-form').addEventListener('submit', e => run(async () => {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    const action = e.submitter.value;
+    tokens.set(await api('POST', '/auth/' + action, { email: f.get('email'), password: f.get('password') }));
+    await loadUser();
+    render();
+  }));
+}
+
+async function loadUser() {
+  state.user = await api('GET', '/users/me');
+}
+
+// ---------- catalog ----------
+async function loadProducts() {
+  state.products = await api('GET', '/products');
+}
+
+async function renderCatalog() {
+  $app.innerHTML = '<div class="card muted">Загрузка…</div>';
+  await run(loadProducts);
+  $app.innerHTML = `
+    <div class="card">
+      <h2>Каталог</h2>
+      <div class="table-wrap"><table>
+        <tr><th>Товар</th><th class="num">Цена</th><th class="num">На складе</th><th class="num">В корзине</th><th></th></tr>
+        ${state.products.map(p => `
+          <tr>
+            <td>${esc(p.name)}</td>
+            <td class="num">${money(p.price)}</td>
+            <td class="num">${p.quantity}</td>
+            <td class="num">${state.cart[p.id] || ''}</td>
+            <td><button class="btn" data-add="${p.id}" ${p.quantity <= (state.cart[p.id] || 0) ? 'disabled' : ''}>В корзину</button></td>
+          </tr>`).join('') || '<tr><td colspan="5" class="muted">Товаров пока нет</td></tr>'}
+      </table></div>
+    </div>`;
+  $app.querySelectorAll('[data-add]').forEach(b => b.addEventListener('click', () => {
+    const id = b.dataset.add;
+    state.cart[id] = (state.cart[id] || 0) + 1;
+    renderCatalog();
+  }));
+}
+
+// ---------- cart ----------
+async function renderCart() {
+  if (!state.products.length) await run(loadProducts);
+  const rows = Object.entries(state.cart)
+    .map(([id, qty]) => ({ product: state.products.find(p => p.id == id), qty }))
+    .filter(r => r.product);
+  const total = rows.reduce((s, r) => s + r.product.price * r.qty, 0);
+  $app.innerHTML = `
+    <div class="card">
+      <h2>Корзина</h2>
+      ${rows.length ? `
+        <div class="table-wrap"><table>
+          <tr><th>Товар</th><th class="num">Цена</th><th class="num">Кол-во</th><th class="num">Сумма</th><th></th></tr>
+          ${rows.map(r => `
+            <tr>
+              <td>${esc(r.product.name)}</td>
+              <td class="num">${money(r.product.price)}</td>
+              <td class="num"><input type="number" min="1" max="${Math.min(1000, r.product.quantity)}" value="${r.qty}" data-qty="${r.product.id}"></td>
+              <td class="num">${money(r.product.price * r.qty)}</td>
+              <td><button class="btn danger" data-remove="${r.product.id}">Убрать</button></td>
+            </tr>`).join('')}
+          <tr><td colspan="3"><b>Итого</b></td><td class="num"><b>${money(total)}</b></td><td></td></tr>
+        </table></div>
+        <p class="row"><button class="btn primary" id="checkout">Оформить заказ</button></p>
+      ` : '<p class="muted">Корзина пуста. Добавьте товары из каталога.</p>'}
+    </div>`;
+  $app.querySelectorAll('[data-qty]').forEach(i => i.addEventListener('change', () => {
+    const v = parseInt(i.value, 10);
+    if (v > 0) state.cart[i.dataset.qty] = v; else delete state.cart[i.dataset.qty];
+    render();
+  }));
+  $app.querySelectorAll('[data-remove]').forEach(b => b.addEventListener('click', () => {
+    delete state.cart[b.dataset.remove]; render();
+  }));
+  const checkout = document.getElementById('checkout');
+  if (checkout) checkout.addEventListener('click', () => run(async () => {
+    checkout.disabled = true;
+    try {
+      const items = rows.map(r => ({ product_id: r.product.id, quantity: r.qty }));
+      const order = await api('POST', '/orders', { items });
+      state.cart = {};
+      toast(`Заказ №${order.id} оформлен на ${money(order.total)}`);
+      state.tab = 'orders'; render();
+    } finally { checkout.disabled = false; }
+  }));
+}
+
+// ---------- orders ----------
+async function renderOrders() {
+  $app.innerHTML = '<div class="card muted">Загрузка…</div>';
+  let orders = [];
+  await run(async () => { orders = await api('GET', '/orders'); });
+  $app.innerHTML = `
+    <div class="card">
+      <h2>${isWarehouse() ? 'Все заказы' : 'Мои заказы'}</h2>
+      ${orders.map(o => `
+        <div class="order">
+          <div class="order-head">
+            <b>№${o.id}</b> ${badge(o.status)}
+            <span class="muted">${date(o.created_at)}</span>
+            ${isWarehouse() ? `<span>покупатель: <b>${esc(o.user_email)}</b> <span class="muted">#${o.user_id}</span></span>` : ''}
+            <span class="spacer"></span>
+            <b>${money(o.total)}</b>
+          </div>
+          <ul>${o.items.map(i => `<li>${esc(i.name)} × ${i.quantity} — ${money(i.amount)}</li>`).join('')}</ul>
+          <div class="row">
+            ${actions(o).map(s => `<button class="btn ${s === 'CANCELLED' ? 'danger' : ''}" data-order="${o.id}" data-status="${s}">${s === 'CANCELLED' ? 'Отменить' : '→ ' + STATUS[s]}</button>`).join('')}
+            <button class="btn" data-history="${o.id}">История</button>
+          </div>
+          <div id="history-${o.id}"></div>
+        </div>`).join('') || '<p class="muted">Заказов пока нет</p>'}
+    </div>`;
+  $app.querySelectorAll('[data-status]').forEach(b => b.addEventListener('click', () => run(async () => {
+    const s = b.dataset.status;
+    if (s === 'CANCELLED' && !confirm('Отменить заказ? Товары вернутся на склад.')) return;
+    await api('PATCH', `/orders/${b.dataset.order}/status`, { status: s });
+    toast(`Заказ №${b.dataset.order}: ${STATUS[s]}`);
+    renderOrders();
+  })));
+  $app.querySelectorAll('[data-history]').forEach(b => b.addEventListener('click', () => run(async () => {
+    const box = document.getElementById('history-' + b.dataset.history);
+    if (box.innerHTML) { box.innerHTML = ''; return; }
+    const order = orders.find(o => o.id == b.dataset.history);
+    const h = await api('GET', `/orders/${b.dataset.history}/history`);
+    box.innerHTML = `<ul class="muted">${h.map(e =>
+      `<li>${date(e.changed_at)}: ${e.from_status ? STATUS[e.from_status] + ' → ' : ''}${STATUS[e.to_status]} (${changedBy(e, order)})</li>`).join('')}</ul>`;
+  })));
+}
+
+// the history has only the user id: the order's owner is the customer, anyone else is the warehouse
+function changedBy(entry, order) {
+  if (entry.changed_by == null) return 'система';
+  if (entry.changed_by === order.user_id) return 'покупатель ' + esc(order.user_email);
+  return `склад, сотрудник #${entry.changed_by}`;
+}
+
+// a customer may only cancel, the warehouse may do every allowed transition
+function actions(order) {
+  const next = NEXT[order.status] || [];
+  return isWarehouse() ? next : next.filter(s => s === 'CANCELLED');
+}
+
+// ---------- products admin (warehouse) ----------
+async function renderAdmin() {
+  $app.innerHTML = '<div class="card muted">Загрузка…</div>';
+  await run(loadProducts);
+  $app.innerHTML = `
+    <div class="card">
+      <h2>Новый товар</h2>
+      <form class="row" id="new-product">
+        <input name="name" placeholder="Название" required>
+        <input name="price" type="number" step="0.01" min="0" placeholder="Цена" required>
+        <input name="quantity" type="number" min="0" placeholder="Кол-во" required>
+        <button class="btn primary">Добавить</button>
+      </form>
+    </div>
+    <div class="card">
+      <h2>Товары</h2>
+      <div class="table-wrap"><table>
+        <tr><th>ID</th><th>Название</th><th>Цена</th><th>Кол-во</th><th></th></tr>
+        ${state.products.map(p => `
+          <tr data-row="${p.id}">
+            <td class="muted">${p.id}</td>
+            <td><input name="name" value="${esc(p.name)}"></td>
+            <td><input name="price" type="number" step="0.01" min="0" value="${p.price}" style="width:110px"></td>
+            <td><input name="quantity" type="number" min="0" value="${p.quantity}"></td>
+            <td class="row">
+              <button class="btn" data-save="${p.id}">Сохранить</button>
+              <button class="btn danger" data-delete="${p.id}">Удалить</button>
+            </td>
+          </tr>`).join('')}
+      </table></div>
+    </div>`;
+
+  const readFields = el => ({
+    name: el.querySelector('[name=name]').value.trim(),
+    price: el.querySelector('[name=price]').value,
+    quantity: parseInt(el.querySelector('[name=quantity]').value, 10)
+  });
+
+  document.getElementById('new-product').addEventListener('submit', e => run(async () => {
+    e.preventDefault();
+    const p = await api('POST', '/products', readFields(e.target));
+    toast(`Товар «${p.name}» добавлен`);
+    renderAdmin();
+  }));
+  $app.querySelectorAll('[data-save]').forEach(b => b.addEventListener('click', () => run(async () => {
+    const row = $app.querySelector(`[data-row="${b.dataset.save}"]`);
+    await api('PUT', `/products/${b.dataset.save}`, readFields(row));
+    toast('Сохранено');
+  })));
+  $app.querySelectorAll('[data-delete]').forEach(b => b.addEventListener('click', () => run(async () => {
+    if (!confirm('Удалить товар?')) return;
+    await api('DELETE', `/products/${b.dataset.delete}`);
+    delete state.cart[b.dataset.delete];
+    toast('Товар удалён');
+    renderAdmin();
+  })));
+}
+
+// ---------- start ----------
+(async () => {
+  if (tokens.access || tokens.refresh) {
+    try { await loadUser(); } catch { tokens.clear(); state.user = null; }
+  }
+  render();
+})();
+</script>
+</body>
+</html>

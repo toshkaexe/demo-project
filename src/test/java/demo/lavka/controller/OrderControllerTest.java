@@ -99,6 +99,7 @@ class OrderControllerTest {
                 .andExpect(status().isCreated())
                 .andExpect(header().string("Location", endsWith("/orders/" + orderRepository.findAll().getFirst().getId())))
                 .andExpect(jsonPath("$.user_id").value(userId))
+                .andExpect(jsonPath("$.user_email").value("anton@example.com"))
                 .andExpect(jsonPath("$.status").value("CREATED"))
                 .andExpect(jsonPath("$.items.length()").value(2))
                 .andExpect(jsonPath("$.items[0].product_id").value(milk))
