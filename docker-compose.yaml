@@ -7,6 +7,7 @@ services:
       POSTGRES_USER: lavka
       POSTGRES_PASSWORD: lavka
     ports:
+      # published for running the app from the IDE and for psql; the app container uses the internal network
       - "5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql
@@ -15,6 +16,24 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  app:
+    build: .
+    image: lavka-app
+    container_name: lavka-app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/lavka
+      SPRING_DATASOURCE_USERNAME: lavka
+      SPRING_DATASOURCE_PASSWORD: lavka
+      # taken from .env next to this file
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is not set, copy .env.example to .env and fill it in}
+    ports:
+      # another host port if 8080 is busy (e.g. the app is running from the IDE): APP_PORT=8090 docker compose up -d
+      - "${APP_PORT:-8080}:8080"
+    restart: unless-stopped
 
 volumes:
   postgres-data:

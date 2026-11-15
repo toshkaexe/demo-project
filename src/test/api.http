@@ -1,42 +1,1002 @@
+
+### ===== Auth =====
+
 ### 1. Register: creates the user and returns a token pair
-POST http://localhost:8080/auth/register
+< {%
+    client.global.set("email", "api-test-" + Date.now() + "@example.com");
+%}
+POST {{host}}/auth/register
 Content-Type: application/json
 
 {
-  "email": "AAA_petiad@gmail.com",
+  "email": "{{email}}",
+  "password": "secret123"
+}
+
+> {%
+    client.test("register: 201 and a token pair", () => {
+        client.assert(response.status === 201, "status " + response.status);
+        client.assert(response.body.access_token, "no access_token");
+        client.assert(response.body.refresh_token, "no refresh_token");
+    });
+%}
+
+
+### 2. Register the same email again (in another case) -> 409
+POST {{host}}/auth/register
+Content-Type: application/json
+
+{
+  "email": "{{email}}",
+  "password": "secret123"
+}
+
+> {%
+    client.test("register twice: 409", () => {
+        client.assert(response.status === 409, "status " + response.status);
+    });
+%}
+
+
+### 3. Login
+POST {{host}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "{{email}}",
+  "password": "secret123"
+}
+
+> {%
+    client.test("login: 200 and a token pair", () => {
+        client.assert(response.status === 200, "status " + response.status);
+        client.assert(response.body.access_token, "no access_token");
+    });
+    client.global.set("access_token", response.body.access_token);
+    client.global.set("refresh_token", response.body.refresh_token);
+%}
+
+
+### 4. Login with a wrong password -> 401
+POST {{host}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "{{email}}",
+  "password": "wrong-password"
+}
+
+> {%
+    client.test("wrong password: 401", () => {
+        client.assert(response.status === 401, "status " + response.status);
+    });
+%}
+
+
+### 5. Current user: no body, access token in the header
+GET {{host}}/users/me
+Authorization: Bearer {{access_token}}
+
+> {%
+    client.test("me: 200 and the same email", () => {
+        client.assert(response.status === 200, "status " + response.status);
+        client.assert(response.body.email === client.global.get("email"), "email " + response.body.email);
+        client.assert(response.body.password_hash === undefined, "password hash must not be returned");
+        client.assert(response.body.role === "CUSTOMER", "role " + response.body.role);
+    });
+    client.global.set("user_id", response.body.id);
+%}
+
+
+### 6. Current user without a token -> 401
+GET {{host}}/users/me
+
+> {%
+    client.test("me without token: 401", () => {
+        client.assert(response.status === 401, "status " + response.status);
+    });
+%}
+
+
+### 7. New access + refresh pair by refresh token (the old refresh token stops working)
+POST {{host}}/auth/refresh
+Content-Type: application/json
+
+{
+  "refresh_token": "{{refresh_token}}"
+}
+
+> {%
+    // read before set: client.test callbacks run after the whole script, when the variable is already new
+    const previous = client.global.get("refresh_token");
+    client.test("refresh: 200 and a new pair", () => {
+        client.assert(response.status === 200, "status " + response.status);
+        client.assert(response.body.refresh_token !== previous, "refresh token not changed");
+    });
+    client.global.set("old_refresh_token", previous);
+    client.global.set("access_token", response.body.access_token);
+    client.global.set("refresh_token", response.body.refresh_token);
+%}
+
+
+### 8. The old refresh token can't be used twice -> 401
+POST {{host}}/auth/refresh
+Content-Type: application/json
+
+{
+  "refresh_token": "{{old_refresh_token}}"
+}
+
+> {%
+    client.test("used refresh token: 401", () => {
+        client.assert(response.status === 401, "status " + response.status);
+    });
+%}
+
+
+### ===== Warehouse employee =====
+
+### 9. Warehouse: login (the employee is created by fill_all.sh)
+POST {{host}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "warehouse@lavka.local",
   "password": "123456"
 }
 
+> {%
+    client.test("warehouse login: 200 (if 401, run ./src/test/fill_all.sh first)", () => {
+        client.assert(response.status === 200, "status " + response.status);
+    });
+    client.global.set("warehouse_token", response.body.access_token);
+%}
 
-### 2. Login (email only)
-POST http://localhost:8080/auth/login
+
+### 10. Warehouse: the role is WAREHOUSE
+GET {{host}}/users/me
+Authorization: Bearer {{warehouse_token}}
+
+> {%
+    client.test("warehouse me: role WAREHOUSE", () => {
+        client.assert(response.status === 200, "status " + response.status);
+        client.assert(response.body.role === "WAREHOUSE", "role " + response.body.role + ": run ./src/test/fill_all.sh");
+    });
+    client.global.set("warehouse_id", response.body.id);
+%}
+
+
+### ===== Products =====
+
+### 11. Products: create without a token -> 401 (reading is open, writing is for the warehouse)
+POST {{host}}/products
 Content-Type: application/json
 
 {
-  "email": "petia@gmail.com",
-  "password": "123456"
+  "name": "Anonymous product",
+  "quantity": 1,
+  "price": 1.00
 }
 
+> {%
+    client.test("create product without token: 401", () => {
+        client.assert(response.status === 401, "status " + response.status);
+    });
+%}
 
-### 3. Current user: no body, access token in the header
-GET http://localhost:8080/users/me
-Authorization: Bearer
 
-### 4. New access + refresh pair by refresh token (the old refresh token stops working)
-POST http://localhost:8080/auth/refresh
+### 12. Products: a customer can't change the catalog -> 403
+POST {{host}}/products
+Authorization: Bearer {{access_token}}
 Content-Type: application/json
 
 {
-  "refresh_token": ""
+  "name": "Customer product",
+  "quantity": 1,
+  "price": 1.00
 }
 
+> {%
+    client.test("create product as customer: 403", () => {
+        client.assert(response.status === 403, "status " + response.status);
+    });
+%}
 
 
-### 5. Logout: revokes both tokens
-POST http://localhost:8080/auth/logout
+### 13. Products: create -> 201 + Location: /products/{id}
+POST {{host}}/products
+Authorization: Bearer {{warehouse_token}}
+Content-Type: application/json
+
+{
+  "name": "Milk 3.2%",
+  "quantity": 10,
+  "price": 89.90
+}
+
+> {%
+    client.test("create product: 201, Location and the product", () => {
+        client.assert(response.status === 201, "status " + response.status);
+        client.assert(response.headers.valueOf("Location").endsWith("/products/" + response.body.id),
+            "Location " + response.headers.valueOf("Location"));
+        client.assert(response.body.name === "Milk 3.2%", "name " + response.body.name);
+        client.assert(response.body.quantity === 10, "quantity " + response.body.quantity);
+        client.assert(response.body.price === 89.9, "price " + response.body.price);
+    });
+    client.global.set("product_id", response.body.id);
+%}
+
+
+### 14. Products: second product for orders
+POST {{host}}/products
+Authorization: Bearer {{warehouse_token}}
+Content-Type: application/json
+
+{
+  "name": "Bread",
+  "quantity": 5,
+  "price": 45.00
+}
+
+> {%
+    client.test("create second product: 201", () => {
+        client.assert(response.status === 201, "status " + response.status);
+    });
+    client.global.set("product2_id", response.body.id);
+%}
+
+
+### 15. Products: invalid body -> 400 (empty name, negative quantity, 3 digits after the point)
+POST {{host}}/products
+Authorization: Bearer {{warehouse_token}}
+Content-Type: application/json
+
+{
+  "name": " ",
+  "quantity": -1,
+  "price": 1.999
+}
+
+> {%
+    client.test("invalid product: 400", () => {
+        client.assert(response.status === 400, "status " + response.status);
+    });
+%}
+
+
+### 16. Products: list all, sorted by id
+GET {{host}}/products
+
+> {%
+    client.test("list products: 200 and contains the new product", () => {
+        client.assert(response.status === 200, "status " + response.status);
+        const ids = response.body.map(p => p.id);
+        client.assert(ids.includes(client.global.get("product_id")), "product not in the list");
+        client.assert(ids.every((id, i) => i === 0 || ids[i - 1] < id), "not sorted by id");
+    });
+%}
+
+
+### 17. Products: one by id
+GET {{host}}/products/{{product_id}}
+
+> {%
+    client.test("get product: 200", () => {
+        client.assert(response.status === 200, "status " + response.status);
+        client.assert(response.body.name === "Milk 3.2%", "name " + response.body.name);
+    });
+%}
+
+
+### 18. Products: unknown id -> 404
+GET {{host}}/products/2000000000
+
+> {%
+    client.test("unknown product: 404", () => {
+        client.assert(response.status === 404, "status " + response.status);
+    });
+%}
+
+
+### 19. Products: update, replaces all fields (PUT)
+PUT {{host}}/products/{{product_id}}
+Authorization: Bearer {{warehouse_token}}
+Content-Type: application/json
+
+{
+  "name": "Milk 2.5%",
+  "quantity": 10,
+  "price": 79.90
+}
+
+> {%
+    client.test("update product: 200 and new values in the answer", () => {
+        client.assert(response.status === 200, "status " + response.status);
+        client.assert(response.body.name === "Milk 2.5%", "name " + response.body.name);
+        client.assert(response.body.price === 79.9, "price " + response.body.price);
+    });
+%}
+
+
+### 20. Products: the update is really saved, not only returned
+GET {{host}}/products/{{product_id}}
+
+> {%
+    client.test("updated product is saved in the database", () => {
+        client.assert(response.status === 200, "status " + response.status);
+        client.assert(response.body.name === "Milk 2.5%", "name in the database: " + response.body.name);
+        client.assert(response.body.price === 79.9, "price in the database: " + response.body.price);
+    });
+%}
+
+
+### 21. Products: update with an invalid body -> 400
+PUT {{host}}/products/{{product_id}}
+Authorization: Bearer {{warehouse_token}}
+Content-Type: application/json
+
+{
+  "name": "Milk 2.5%",
+  "quantity": -5,
+  "price": 79.90
+}
+
+> {%
+    client.test("invalid update: 400", () => {
+        client.assert(response.status === 400, "status " + response.status);
+    });
+%}
+
+
+### 22. Products: update an unknown product -> 404
+PUT {{host}}/products/2000000000
+Authorization: Bearer {{warehouse_token}}
+Content-Type: application/json
+
+{
+  "name": "Ghost",
+  "quantity": 1,
+  "price": 1.00
+}
+
+> {%
+    client.test("update unknown product: 404", () => {
+        client.assert(response.status === 404, "status " + response.status);
+    });
+%}
+
+
+### ===== Orders =====
+
+### 23. Orders: without a token -> 401
+POST {{host}}/orders
+Content-Type: application/json
+
+{
+  "items": [{ "product_id": {{product_id}}, "quantity": 1 }]
+}
+
+> {%
+    client.test("order without token: 401", () => {
+        client.assert(response.status === 401, "status " + response.status);
+    });
+%}
+
+
+### 23a. Orders: a user without a delivery address can't order -> 400
+POST {{host}}/orders
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "items": [{ "product_id": {{product_id}}, "quantity": 1 }]
+}
+
+> {%
+    client.test("order without address: 400", () => {
+        client.assert(response.status === 400, "status " + response.status);
+    });
+%}
+
+
+### 23b. Addresses: add a delivery address -> 201, the first one becomes active
+POST {{host}}/users/me/addresses
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "postal_code": "101000",
+  "country": "Россия",
+  "city": "Москва",
+  "street": "Тверская",
+  "house": "12к2",
+  "apartment": "45",
+  "recipient_name": "Антон Иванов",
+  "courier_note": "подъезд 3, домофон 45"
+}
+
+> {%
+    client.test("create address: 201, active", () => {
+        client.assert(response.status === 201, "status " + response.status);
+        client.assert(response.body.active === true, "active " + response.body.active);
+    });
+    client.global.set("address_id", response.body.id);
+%}
+
+
+### 23c. Addresses: a second address is not active until it is chosen
+POST {{host}}/users/me/addresses
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "postal_code": "141500",
+  "country": "Россия",
+  "city": "Солнечногорск",
+  "street": "Лесная",
+  "house": "5А",
+  "recipient_name": "Антон Иванов"
+}
+
+> {%
+    client.test("second address: 201, not active", () => {
+        client.assert(response.status === 201, "status " + response.status);
+        client.assert(response.body.active === false, "active " + response.body.active);
+    });
+    client.global.set("address2_id", response.body.id);
+%}
+
+
+### 23d. Addresses: make the second one active -> 200
+PUT {{host}}/users/me/addresses/{{address2_id}}/active
+Authorization: Bearer {{access_token}}
+
+> {%
+    client.test("activate address: 200", () => {
+        client.assert(response.status === 200, "status " + response.status);
+        client.assert(response.body.active === true, "active " + response.body.active);
+    });
+%}
+
+
+### 23e. Addresses: list, only the second one is active
+GET {{host}}/users/me/addresses
+Authorization: Bearer {{access_token}}
+
+> {%
+    client.test("addresses: two, one active", () => {
+        client.assert(response.status === 200, "status " + response.status);
+        client.assert(response.body.length === 2, "length " + response.body.length);
+        client.assert(response.body[0].active === false && response.body[1].active === true, "active flags");
+    });
+%}
+
+
+### 24. Orders: create -> 201 + Location: /orders/{id}, the items are taken from stock, to the chosen address
+POST {{host}}/orders
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "items": [
+    { "product_id": {{product_id}}, "quantity": 2 },
+    { "product_id": {{product2_id}}, "quantity": 1 }
+  ],
+  "address_id": {{address_id}}
+}
+
+> {%
+    client.test("create order: 201, items with prices and total", () => {
+        client.assert(response.status === 201, "status " + response.status);
+        client.assert(response.headers.valueOf("Location").endsWith("/orders/" + response.body.id),
+            "Location " + response.headers.valueOf("Location"));
+        client.assert(response.body.status === "CREATED", "status " + response.body.status);
+        client.assert(response.body.user_id === client.global.get("user_id"), "user_id " + response.body.user_id);
+        client.assert(response.body.items.length === 2, "items " + response.body.items.length);
+        client.assert(response.body.items[0].price === 79.9, "price " + response.body.items[0].price);
+        client.assert(response.body.items[0].amount === 159.8, "amount " + response.body.items[0].amount);
+        client.assert(response.body.total === 204.8, "total " + response.body.total);
+        client.assert(response.body.completed_at == null, "completed_at " + response.body.completed_at);
+        // address_id was passed: the order goes there, not to the active address
+        client.assert(response.body.delivery_address.city === "Москва", "city " + response.body.delivery_address.city);
+    });
+    client.global.set("order_id", response.body.id);
+%}
+
+
+### 25. Products: stock went down by the ordered quantity (10 - 2)
+GET {{host}}/products/{{product_id}}
+
+> {%
+    client.test("stock is taken by the order", () => {
+        client.assert(response.body.quantity === 8, "quantity " + response.body.quantity);
+    });
+%}
+
+
+### 26. Orders: more than in stock -> 409, nothing is taken
+POST {{host}}/orders
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "items": [
+    { "product_id": {{product2_id}}, "quantity": 1 },
+    { "product_id": {{product_id}}, "quantity": 1000 }
+  ]
+}
+
+> {%
+    client.test("not enough stock: 409", () => {
+        client.assert(response.status === 409, "status " + response.status);
+    });
+%}
+
+
+### 27. Products: the rejected order took nothing (bread is still 5 - 1)
+GET {{host}}/products/{{product2_id}}
+
+> {%
+    client.test("rejected order did not touch stock", () => {
+        client.assert(response.body.quantity === 4, "quantity " + response.body.quantity);
+    });
+%}
+
+
+### 28. Orders: invalid body -> 400 (same product twice)
+POST {{host}}/orders
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "items": [
+    { "product_id": {{product_id}}, "quantity": 1 },
+    { "product_id": {{product_id}}, "quantity": 1 }
+  ]
+}
+
+> {%
+    client.test("duplicate product in order: 400", () => {
+        client.assert(response.status === 400, "status " + response.status);
+    });
+%}
+
+
+### 29. Orders: my orders, newest first, one page
+GET {{host}}/orders?page=0&size=20
+Authorization: Bearer {{access_token}}
+
+> {%
+    client.test("list orders: 200, the new order is first", () => {
+        client.assert(response.status === 200, "status " + response.status);
+        client.assert(response.body.content[0].id === client.global.get("order_id"), "first id " + response.body.content[0].id);
+        client.assert(response.body.page === 0 && response.body.size === 20, "page " + response.body.page);
+        client.assert(response.body.total_elements >= 1, "total " + response.body.total_elements);
+    });
+%}
+
+
+### 29a. Orders: page size above the limit
+GET {{host}}/orders?size=101
+Authorization: Bearer {{access_token}}
+
+> {%
+    client.test("list orders: size > 100 is 400", () => {
+        client.assert(response.status === 400, "status " + response.status);
+    });
+%}
+
+
+### 30. Orders: one of my orders
+GET {{host}}/orders/{{order_id}}
+Authorization: Bearer {{access_token}}
+
+> {%
+    client.test("get order: 200", () => {
+        client.assert(response.status === 200, "status " + response.status);
+        client.assert(response.body.items.length === 2, "items " + response.body.items.length);
+    });
+%}
+
+
+### 31. Orders: a customer can't move the order forward -> 403
+PATCH {{host}}/orders/{{order_id}}/status
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "status": "PROCESSING"
+}
+
+> {%
+    client.test("customer -> PROCESSING: 403", () => {
+        client.assert(response.status === 403, "status " + response.status);
+    });
+%}
+
+
+### 32. Orders: the warehouse starts assembling -> 200
+# CREATED -> PROCESSING -> READY -> COMPLETED; CANCELLED only from CREATED (returns items to stock)
+PATCH {{host}}/orders/{{order_id}}/status
+Authorization: Bearer {{warehouse_token}}
+Content-Type: application/json
+
+{
+  "status": "PROCESSING"
+}
+
+> {%
+    client.test("PROCESSING: 200", () => {
+        client.assert(response.status === 200, "status " + response.status);
+        client.assert(response.body.status === "PROCESSING", "status " + response.body.status);
+    });
+%}
+
+
+### 33. Orders: skipping a step -> 409
+PATCH {{host}}/orders/{{order_id}}/status
+Authorization: Bearer {{warehouse_token}}
+Content-Type: application/json
+
+{
+  "status": "COMPLETED"
+}
+
+> {%
+    client.test("PROCESSING -> COMPLETED: 409", () => {
+        client.assert(response.status === 409, "status " + response.status);
+    });
+%}
+
+
+### 34. Orders: unknown status -> 400
+PATCH {{host}}/orders/{{order_id}}/status
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "status": "LOST"
+}
+
+> {%
+    client.test("unknown status: 400", () => {
+        client.assert(response.status === 400, "status " + response.status);
+    });
+%}
+
+
+### 35. Orders: a product in an order can't be deleted -> 409
+DELETE {{host}}/products/{{product_id}}
+Authorization: Bearer {{warehouse_token}}
+
+> {%
+    client.test("delete ordered product: 409", () => {
+        client.assert(response.status === 409, "status " + response.status);
+    });
+%}
+
+
+### 36. Orders: after assembling started the order can't be cancelled -> 409 (even by the customer who placed it)
+PATCH {{host}}/orders/{{order_id}}/status
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "status": "CANCELLED"
+}
+
+> {%
+    client.test("PROCESSING -> CANCELLED: 409", () => {
+        client.assert(response.status === 409, "status " + response.status);
+    });
+%}
+
+
+### 37. Orders: the warehouse marks the order assembled -> 200
+PATCH {{host}}/orders/{{order_id}}/status
+Authorization: Bearer {{warehouse_token}}
+Content-Type: application/json
+
+{
+  "status": "READY"
+}
+
+> {%
+    client.test("READY: 200", () => {
+        client.assert(response.status === 200, "status " + response.status);
+        client.assert(response.body.status === "READY", "status " + response.body.status);
+    });
+%}
+
+
+### 38. Orders: READY can't be cancelled either -> 409
+PATCH {{host}}/orders/{{order_id}}/status
+Authorization: Bearer {{warehouse_token}}
+Content-Type: application/json
+
+{
+  "status": "CANCELLED"
+}
+
+> {%
+    client.test("READY -> CANCELLED: 409", () => {
+        client.assert(response.status === 409, "status " + response.status);
+    });
+%}
+
+
+### 39. Orders: the warehouse completes the order -> 200, completed_at is set
+PATCH {{host}}/orders/{{order_id}}/status
+Authorization: Bearer {{warehouse_token}}
+Content-Type: application/json
+
+{
+  "status": "COMPLETED"
+}
+
+> {%
+    client.test("COMPLETED: 200 and completed_at", () => {
+        client.assert(response.status === 200, "status " + response.status);
+        client.assert(response.body.status === "COMPLETED", "status " + response.body.status);
+        client.assert(response.body.completed_at, "completed_at is empty");
+    });
+%}
+
+
+### 40. Orders: COMPLETED is final -> 409
+PATCH {{host}}/orders/{{order_id}}/status
+Authorization: Bearer {{warehouse_token}}
+Content-Type: application/json
+
+{
+  "status": "CREATED"
+}
+
+> {%
+    client.test("COMPLETED -> CREATED: 409", () => {
+        client.assert(response.status === 409, "status " + response.status);
+    });
+%}
+
+
+### 41. Products: a completed order keeps its items taken (still 10 - 2)
+GET {{host}}/products/{{product_id}}
+
+> {%
+    client.test("completed order did not return stock", () => {
+        client.assert(response.body.quantity === 8, "quantity " + response.body.quantity);
+    });
+%}
+
+
+### 42. Orders: status history, oldest first
+GET {{host}}/orders/{{order_id}}/history
+Authorization: Bearer {{access_token}}
+
+> {%
+    client.test("history: CREATED -> PROCESSING -> READY -> COMPLETED", () => {
+        client.assert(response.status === 200, "status " + response.status);
+        const steps = response.body.map(h => (h.from_status || "null") + "->" + h.to_status);
+        client.assert(steps.join(", ") === "null->CREATED, CREATED->PROCESSING, PROCESSING->READY, READY->COMPLETED",
+            "history " + steps.join(", "));
+        client.assert(response.body[0].changed_by === client.global.get("user_id"), "CREATED by " + response.body[0].changed_by);
+        client.assert(response.body[3].changed_by === client.global.get("warehouse_id"), "COMPLETED by " + response.body[3].changed_by);
+    });
+%}
+
+
+### 43. Orders: a second order, to cancel it before assembling
+POST {{host}}/orders
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "items": [{ "product_id": {{product_id}}, "quantity": 1 }]
+}
+
+> {%
+    client.test("second order: 201", () => {
+        client.assert(response.status === 201, "status " + response.status);
+    });
+    client.global.set("order2_id", response.body.id);
+%}
+
+
+### 44. Orders: the customer cancels while the order is CREATED -> 200, the items go back to stock
+PATCH {{host}}/orders/{{order2_id}}/status
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "status": "CANCELLED"
+}
+
+> {%
+    client.test("CREATED -> CANCELLED: 200", () => {
+        client.assert(response.status === 200, "status " + response.status);
+        client.assert(response.body.status === "CANCELLED", "status " + response.body.status);
+        client.assert(response.body.completed_at == null, "completed_at " + response.body.completed_at);
+    });
+%}
+
+
+### 45. Products: stock is back after the cancel (8 - 1 + 1)
+GET {{host}}/products/{{product_id}}
+
+> {%
+    client.test("cancel returned the items to stock", () => {
+        client.assert(response.body.quantity === 8, "quantity " + response.body.quantity);
+    });
+%}
+
+
+### 46. Orders: CANCELLED is final -> 409
+PATCH {{host}}/orders/{{order2_id}}/status
+Authorization: Bearer {{warehouse_token}}
+Content-Type: application/json
+
+{
+  "status": "PROCESSING"
+}
+
+> {%
+    client.test("CANCELLED -> PROCESSING: 409", () => {
+        client.assert(response.status === 409, "status " + response.status);
+    });
+%}
+
+
+### 47. Orders: history of the cancelled order
+GET {{host}}/orders/{{order2_id}}/history
+Authorization: Bearer {{access_token}}
+
+> {%
+    client.test("history: CREATED -> CANCELLED by the customer", () => {
+        const steps = response.body.map(h => (h.from_status || "null") + "->" + h.to_status);
+        client.assert(steps.join(", ") === "null->CREATED, CREATED->CANCELLED", "history " + steps.join(", "));
+        client.assert(response.body[1].changed_by === client.global.get("user_id"), "CANCELLED by " + response.body[1].changed_by);
+    });
+%}
+
+
+### 48. Orders: unknown or someone else's order -> 404
+GET {{host}}/orders/9000000000000
+Authorization: Bearer {{access_token}}
+
+> {%
+    client.test("unknown order: 404", () => {
+        client.assert(response.status === 404, "status " + response.status);
+    });
+    // a fresh Idempotency-Key for the next requests, so the file can run again and again
+    client.global.set("idempotency_key", "api-http-" + Date.now());
+%}
+
+
+### 48a. Orders: place with an Idempotency-Key -> 201, a new order, stock 8 - 1
+POST {{host}}/orders
+Authorization: Bearer {{access_token}}
+Idempotency-Key: {{idempotency_key}}
+Content-Type: application/json
+
+{ "items": [ { "product_id": {{product_id}}, "quantity": 1 } ] }
+
+> {%
+    client.test("idempotent create: 201, not a replay", () => {
+        client.assert(response.status === 201, "status " + response.status);
+        client.assert(response.headers.valueOf("Idempotent-Replayed") == null, "replayed " + response.headers.valueOf("Idempotent-Replayed"));
+    });
+    client.global.set("idempotent_order_id", response.body.id);
+%}
+
+
+### 48b. Orders: the same request again (the response "got lost") -> the same order, Idempotent-Replayed: true
+POST {{host}}/orders
+Authorization: Bearer {{access_token}}
+Idempotency-Key: {{idempotency_key}}
+Content-Type: application/json
+
+{ "items": [ { "product_id": {{product_id}}, "quantity": 1 } ] }
+
+> {%
+    client.test("retry: 201 with the order placed before", () => {
+        client.assert(response.status === 201, "status " + response.status);
+        client.assert(response.headers.valueOf("Idempotent-Replayed") === "true", "replayed " + response.headers.valueOf("Idempotent-Replayed"));
+        client.assert(response.body.id === client.global.get("idempotent_order_id"), "id " + response.body.id);
+    });
+%}
+
+
+### 48c. Products: the retry took nothing (still 8 - 1)
+GET {{host}}/products/{{product_id}}
+
+> {%
+    client.test("stock is taken once", () => {
+        client.assert(response.body.quantity === 7, "quantity " + response.body.quantity);
+    });
+%}
+
+
+### 48d. Orders: the same key for a different order -> 422
+POST {{host}}/orders
+Authorization: Bearer {{access_token}}
+Idempotency-Key: {{idempotency_key}}
+Content-Type: application/json
+
+{ "items": [ { "product_id": {{product_id}}, "quantity": 2 } ] }
+
+> {%
+    client.test("key reused for another order: 422", () => {
+        client.assert(response.status === 422, "status " + response.status);
+    });
+%}
+
+
+### ===== Delete =====
+
+### 49. Products: a product that was never ordered
+POST {{host}}/products
+Authorization: Bearer {{warehouse_token}}
+Content-Type: application/json
+
+{
+  "name": "Temporary product",
+  "quantity": 1,
+  "price": 1.00
+}
+
+> {%
+    client.test("create temporary product: 201", () => {
+        client.assert(response.status === 201, "status " + response.status);
+    });
+    client.global.set("temp_product_id", response.body.id);
+%}
+
+
+### 50. Products: delete -> 204
+DELETE {{host}}/products/{{temp_product_id}}
+Authorization: Bearer {{warehouse_token}}
+
+> {%
+    client.test("delete product: 204", () => {
+        client.assert(response.status === 204, "status " + response.status);
+    });
+%}
+
+
+### 51. Products: deleted product is gone -> 404
+GET {{host}}/products/{{temp_product_id}}
+
+> {%
+    client.test("deleted product: 404", () => {
+        client.assert(response.status === 404, "status " + response.status);
+    });
+%}
+
+
+### ===== Logout =====
+
+### 52. Logout: revokes both tokens -> 204
+POST {{host}}/auth/logout
 Authorization: Bearer {{access_token}}
 Content-Type: application/json
 
 {
   "refresh_token": "{{refresh_token}}"
 }
+
+> {%
+    client.test("logout: 204", () => {
+        client.assert(response.status === 204, "status " + response.status);
+    });
+%}
+
+
+### 53. The revoked access token no longer works -> 401
+GET {{host}}/users/me
+Authorization: Bearer {{access_token}}
+
+> {%
+    client.test("revoked access token: 401", () => {
+        client.assert(response.status === 401, "status " + response.status);
+    });
+%}

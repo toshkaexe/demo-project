@@ -2,3 +2,27 @@ databaseChangeLog:
   - include:
       file: changes/001-create-users-table.sql
       relativeToChangelogFile: true
+  - include:
+      file: changes/002-create-products-table.sql
+      relativeToChangelogFile: true
+  - include:
+      file: changes/003-create-orders-table.sql
+      relativeToChangelogFile: true
+  - include:
+      file: changes/004-create-order-items-and-status-history.sql
+      relativeToChangelogFile: true
+  - include:
+      file: changes/005-users-role-check.sql
+      relativeToChangelogFile: true
+  - include:
+      file: changes/006-create-user-addresses-table.sql
+      relativeToChangelogFile: true
+  - include:
+      file: changes/007-user-addresses-active.sql
+      relativeToChangelogFile: true
+  - include:
+      file: changes/008-orders-delivery-address.sql
+      relativeToChangelogFile: true
+  - include:
+      file: changes/009-orders-idempotency-key.sql
+      relativeToChangelogFile: true

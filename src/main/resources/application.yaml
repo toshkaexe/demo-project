@@ -1,13 +1,10 @@
+# Shared settings. Local ones (database, CORS, .env) are in application-local.yaml
 spring:
   application:
     name: lavka
-  config:
-    # local secrets (JWT_SECRET) from .env in the working directory
-    import: optional:file:.env[.properties]
-  datasource:
-    url: jdbc:postgresql://localhost:5432/lavka
-    username: lavka
-    password: lavka
+  profiles:
+    # used only when SPRING_PROFILES_ACTIVE is not set, so running from the IDE needs no setup
+    default: local
   jpa:
     open-in-view: false
     hibernate:
@@ -15,14 +12,22 @@ spring:
       ddl-auto: validate
   liquibase:
     change-log: classpath:db/changelog/db.changelog-master.yaml
-  web:
-    error:
-      # show the reason ("Invalid email or password", ...) in error responses
-      include-message: always
+
+springdoc:
+  # off unless a profile turns it on (local does): the spec lists every endpoint, role and error code,
+  # which outside a developer machine is just free reconnaissance. OpenApiDocsConfig serves openapi.yaml
+  # only while Swagger UI is on
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false
+    # show the hand-written spec (descriptions, every error code, examples) instead of the one generated from code;
+    # the generated one stays at /v3/api-docs
+    url: /openapi.yaml
 
 auth:
   jwt:
-    # HMAC signing key, at least 32 bytes; comes from .env or the JWT_SECRET env variable
+    # HMAC signing key, at least 32 bytes; comes from the JWT_SECRET env variable (locally also from .env)
     secret: ${JWT_SECRET}
     # short-lived, sent with every request
     access-ttl: 15m
