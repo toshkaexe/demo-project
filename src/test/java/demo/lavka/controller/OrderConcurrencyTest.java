@@ -101,6 +101,32 @@ class OrderConcurrencyTest {
         }
     }
 
+    /**
+     * Anya and Igor order the last carton of milk at the same moment. The rows are read {@code FOR UPDATE}:
+     * the second order waits for the first one to commit and then sees the stock already at 0. Without the lock
+     * both read 1, both pass the check, and the last carton is sold twice.
+     */
+    @Test
+    void parallelOrdersOfTheLastItemSellItOnce() throws Exception {
+        String anya = TestUsers.customer(mvc, "anya@example.com");
+        TestUsers.address(mvc, anya, "Москва");
+        String igor = TestUsers.customer(mvc, "igor@example.com");
+        TestUsers.address(mvc, igor, "Казань");
+
+        for (int round = 1; round <= ROUNDS; round++) {
+            jdbc.update("update products set quantity = 1 where id = ?", milk);
+            long ordersBefore = orderRepository.count();
+
+            List<String> results = placeTogether(anya, igor);
+
+            assertThat(results).as("round %d: one of them gets the milk, the other one is refused", round)
+                    .containsOnlyOnce("201")
+                    .containsOnlyOnce("409 Not enough stock for product " + milk + ": requested 1, available 0");
+            assertThat(stock()).as("round %d: stock is 0, never negative", round).isZero();
+            assertThat(orderRepository.count()).as("round %d: one order is saved", round).isEqualTo(ordersBefore + 1);
+        }
+    }
+
     @Test
     void assembleAndCancelAtTheSameTimeLeaveOneConsistentResult() throws Exception {
         for (int round = 1; round <= ROUNDS; round++) {
@@ -219,6 +245,35 @@ class OrderConcurrencyTest {
             start.countDown();
             List<Integer> statuses = new ArrayList<>();
             for (Future<Integer> result : results) {
+                statuses.add(result.get(30, TimeUnit.SECONDS));
+            }
+            return statuses;
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    // both customers press "place order" for one carton of milk at the same moment; "201" or "409 <reason>"
+    private List<String> placeTogether(String... tokens) throws Exception {
+        ExecutorService pool = Executors.newFixedThreadPool(tokens.length);
+        try {
+            CountDownLatch start = new CountDownLatch(1);
+            List<Future<String>> results = new ArrayList<>();
+            for (String token : tokens) {
+                results.add(pool.submit(() -> {
+                    start.await();
+                    var response = mvc.perform(post("/orders").header("Authorization", TestUsers.bearer(token))
+                                    .contentType(MediaType.APPLICATION_JSON)
+                                    .content("{\"items\": [{\"product_id\": " + milk + ", \"quantity\": 1}]}"))
+                            .andReturn().getResponse();
+                    return response.getStatus() == 201
+                            ? "201"
+                            : response.getStatus() + " " + response.getErrorMessage();
+                }));
+            }
+            start.countDown();
+            List<String> statuses = new ArrayList<>();
+            for (Future<String> result : results) {
                 statuses.add(result.get(30, TimeUnit.SECONDS));
             }
             return statuses;
