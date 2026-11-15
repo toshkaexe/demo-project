@@ -23,6 +23,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -31,6 +32,7 @@ import org.springframework.web.context.WebApplicationContext;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
@@ -57,6 +59,8 @@ class OrderConcurrencyTest {
     private ProductRepository productRepository;
     @Autowired
     private JdbcTemplate jdbc;
+    @Autowired
+    private TransactionTemplate transactions;
 
     private MockMvc mvc;
     private String customer;
@@ -120,6 +124,43 @@ class OrderConcurrencyTest {
         }
     }
 
+    @Test
+    void warehouseEditWaitsWhileAnotherTransactionHoldsTheProduct() throws Exception {
+        CountDownLatch locked = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            // like an order in progress: takes the row FOR UPDATE and keeps the transaction open
+            Future<?> holder = pool.submit(() -> transactions.executeWithoutResult(tx -> {
+                jdbc.queryForObject("select quantity from products where id = ? for update", Integer.class, milk);
+                locked.countDown();
+                try {
+                    release.await(30, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                jdbc.update("update products set quantity = 7 where id = ?", milk);   // sold 3
+            }));
+            assertThat(locked.await(30, TimeUnit.SECONDS)).isTrue();
+
+            Future<Integer> edit = pool.submit(() -> updateMilk(15));
+
+            // the edit is blocked already on reading the product (SELECT ... FOR UPDATE), not only on its UPDATE:
+            // it can't even see the quantity until the other transaction commits
+            assertThat(waitingQuery()).as("PUT waits on the locked read").startsWithIgnoringCase("select");
+            assertThat(edit.isDone()).as("PUT must wait for the lock").isFalse();
+
+            release.countDown();
+            holder.get(30, TimeUnit.SECONDS);
+            assertThat(edit.get(30, TimeUnit.SECONDS)).isEqualTo(200);
+            // the edit ran after the other transaction committed, one after another
+            assertThat(stock()).isEqualTo(15);
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
+        }
+    }
+
     // --- helpers ---
 
     private interface Request {
@@ -157,6 +198,28 @@ class OrderConcurrencyTest {
                 .andExpect(status().isCreated())
                 .andReturn().getResponse().getContentAsString();
         return ((Number) JsonPath.read(body, "$.id")).longValue();
+    }
+
+    // the query of another session that waits for a row lock on products, polled until it shows up
+    private String waitingQuery() throws InterruptedException {
+        for (int i = 0; i < 100; i++) {
+            List<String> waiting = jdbc.queryForList("""
+                    select query from pg_stat_activity
+                    where wait_event_type = 'Lock' and query ilike '%products%' and pid <> pg_backend_pid()
+                    """, String.class);
+            if (!waiting.isEmpty()) {
+                return waiting.getFirst().trim();
+            }
+            Thread.sleep(50);
+        }
+        return "nothing is waiting";
+    }
+
+    private int updateMilk(int quantity) throws Exception {
+        return mvc.perform(put("/products/{id}", milk).header("Authorization", TestUsers.bearer(warehouse))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\": \"Milk\", \"quantity\": " + quantity + ", \"price\": 89.90}"))
+                .andReturn().getResponse().getStatus();
     }
 
     private int changeStatus(String token, Long orderId, String newStatus) throws Exception {

@@ -2,6 +2,7 @@ package demo.lavka.repository;
 
 import java.util.Collection;
 import java.util.List;
+import java.util.Optional;
 
 import demo.lavka.entity.Products;
 import jakarta.persistence.LockModeType;
@@ -19,5 +20,13 @@ public interface ProductRepository extends JpaRepository<Products, Integer> {
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select p from Products p where p.id in :ids order by p.id")
     List<Products> findAllByIdForUpdate(@Param("ids") Collection<Integer> ids);
+
+    /**
+     * One product under {@code SELECT ... FOR UPDATE}, for the warehouse edit: it waits while an order
+     * or a cancel holds the row, and orders wait while the edit holds it. Changes of one product never interleave.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select p from Products p where p.id = :id")
+    Optional<Products> findByIdForUpdate(@Param("id") Integer id);
 
 }

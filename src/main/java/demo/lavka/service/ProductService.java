@@ -53,11 +53,17 @@ public class ProductService {
         return ProductResponse.from(product);
     }
 
+    /**
+     * Pessimistic lock: the row is read {@code FOR UPDATE} and stays locked until commit. If an order or a cancel
+     * of this product is in progress, the edit waits for it; orders placed meanwhile wait for the edit.
+     * Lock order is the same as in orders (one product row), so there is no deadlock.
+     */
     @Transactional
     public ProductResponse update(Integer id, ProductRequest request) {
         String name = request.name().trim();
         validate(name, request.quantity(), request.price());
-        Products product = getOrThrow(id);
+        Products product = productRepository.findByIdForUpdate(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Product " + id + " not found"));
         // replaces all fields at once (PUT semantics)
         product.setName(name);
         product.setQuantity(request.quantity());
