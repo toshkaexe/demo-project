@@ -14,7 +14,13 @@ spring:
     change-log: classpath:db/changelog/db.changelog-master.yaml
 
 springdoc:
+  # off unless a profile turns it on (local does): the spec lists every endpoint, role and error code,
+  # which outside a developer machine is just free reconnaissance. OpenApiDocsConfig serves openapi.yaml
+  # only while Swagger UI is on
+  api-docs:
+    enabled: false
   swagger-ui:
+    enabled: false
     # show the hand-written spec (descriptions, every error code, examples) instead of the one generated from code;
     # the generated one stays at /v3/api-docs
     url: /openapi.yaml

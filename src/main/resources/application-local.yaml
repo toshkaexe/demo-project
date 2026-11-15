@@ -13,6 +13,13 @@ spring:
       # show the reason ("Invalid email or password", ...) in error responses
       include-message: always
 
+springdoc:
+  # Swagger UI, /v3/api-docs and /openapi.yaml only on a developer machine
+  api-docs:
+    enabled: true
+  swagger-ui:
+    enabled: true
+
 cors:
   # the frontend dev server
   allowed-origins: http://localhost:3000
