@@ -8,6 +8,7 @@ import java.util.List;
 
 import jakarta.persistence.CascadeType;
 import jakarta.persistence.Column;
+import jakarta.persistence.Embedded;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
@@ -43,6 +44,10 @@ public class Orders {
     @Column(name = "completed_at")
     private Instant completedAt;
 
+    // null only for orders placed before delivery addresses existed
+    @Embedded
+    private DeliveryAddress deliveryAddress;
+
     // items and history are saved and deleted together with the order
     @OneToMany(mappedBy = "order", cascade = CascadeType.ALL, orphanRemoval = true)
     @OrderBy("id")
@@ -57,7 +62,12 @@ public class Orders {
     }
 
     public Orders(User user) {
+        this(user, null);
+    }
+
+    public Orders(User user, DeliveryAddress deliveryAddress) {
         this.user = user;
+        this.deliveryAddress = deliveryAddress;
         statusHistory.add(new OrderStatusHistory(this, null, OrderStatus.CREATED, user));
     }
 
@@ -104,6 +114,10 @@ public class Orders {
 
     public Instant getCompletedAt() {
         return completedAt;
+    }
+
+    public DeliveryAddress getDeliveryAddress() {
+        return deliveryAddress;
     }
 
     // read-only views: items and history change only through addItem and changeStatus

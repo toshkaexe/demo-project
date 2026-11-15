@@ -63,6 +63,10 @@ public class UserAddress {
     @Column(name = "courier_note", length = 500)
     private String courierNote;
 
+    // the address orders go to; at most one per user (unique partial index in the table)
+    @Column(name = "active", nullable = false)
+    private boolean active;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
@@ -87,7 +91,15 @@ public class UserAddress {
     }
 
     /**
-     * Changes the address itself; the owner stays the same.
+     * Only one address of a user may be active: turn the old one off and flush before turning a new one on,
+     * otherwise the unique index rejects the update.
+     */
+    public void setActive(boolean active) {
+        this.active = active;
+    }
+
+    /**
+     * Changes the address itself; the owner and whether it is active stay the same.
      */
     public void update(String postalCode, String country, String city, String street,
                        String house, String apartment, String recipientName, String courierNote) {

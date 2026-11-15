@@ -383,7 +383,96 @@ Content-Type: application/json
 %}
 
 
-### 24. Orders: create -> 201 + Location: /orders/{id}, the items are taken from stock
+### 23a. Orders: a user without a delivery address can't order -> 400
+POST {{host}}/orders
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "items": [{ "product_id": {{product_id}}, "quantity": 1 }]
+}
+
+> {%
+    client.test("order without address: 400", () => {
+        client.assert(response.status === 400, "status " + response.status);
+    });
+%}
+
+
+### 23b. Addresses: add a delivery address -> 201, the first one becomes active
+POST {{host}}/users/me/addresses
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "postal_code": "101000",
+  "country": "Россия",
+  "city": "Москва",
+  "street": "Тверская",
+  "house": "12к2",
+  "apartment": "45",
+  "recipient_name": "Антон Иванов",
+  "courier_note": "подъезд 3, домофон 45"
+}
+
+> {%
+    client.test("create address: 201, active", () => {
+        client.assert(response.status === 201, "status " + response.status);
+        client.assert(response.body.active === true, "active " + response.body.active);
+    });
+    client.global.set("address_id", response.body.id);
+%}
+
+
+### 23c. Addresses: a second address is not active until it is chosen
+POST {{host}}/users/me/addresses
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "postal_code": "141500",
+  "country": "Россия",
+  "city": "Солнечногорск",
+  "street": "Лесная",
+  "house": "5А",
+  "recipient_name": "Антон Иванов"
+}
+
+> {%
+    client.test("second address: 201, not active", () => {
+        client.assert(response.status === 201, "status " + response.status);
+        client.assert(response.body.active === false, "active " + response.body.active);
+    });
+    client.global.set("address2_id", response.body.id);
+%}
+
+
+### 23d. Addresses: make the second one active -> 200
+PUT {{host}}/users/me/addresses/{{address2_id}}/active
+Authorization: Bearer {{access_token}}
+
+> {%
+    client.test("activate address: 200", () => {
+        client.assert(response.status === 200, "status " + response.status);
+        client.assert(response.body.active === true, "active " + response.body.active);
+    });
+%}
+
+
+### 23e. Addresses: list, only the second one is active
+GET {{host}}/users/me/addresses
+Authorization: Bearer {{access_token}}
+
+> {%
+    client.test("addresses: two, one active", () => {
+        client.assert(response.status === 200, "status " + response.status);
+        client.assert(response.body.length === 2, "length " + response.body.length);
+        client.assert(response.body[0].active === false && response.body[1].active === true, "active flags");
+    });
+%}
+
+
+### 24. Orders: create -> 201 + Location: /orders/{id}, the items are taken from stock, to the chosen address
 POST {{host}}/orders
 Authorization: Bearer {{access_token}}
 Content-Type: application/json
@@ -392,7 +481,8 @@ Content-Type: application/json
   "items": [
     { "product_id": {{product_id}}, "quantity": 2 },
     { "product_id": {{product2_id}}, "quantity": 1 }
-  ]
+  ],
+  "address_id": {{address_id}}
 }
 
 > {%
@@ -407,6 +497,8 @@ Content-Type: application/json
         client.assert(response.body.items[0].amount === 159.8, "amount " + response.body.items[0].amount);
         client.assert(response.body.total === 204.8, "total " + response.body.total);
         client.assert(response.body.completed_at == null, "completed_at " + response.body.completed_at);
+        // address_id was passed: the order goes there, not to the active address
+        client.assert(response.body.delivery_address.city === "Москва", "city " + response.body.delivery_address.city);
     });
     client.global.set("order_id", response.body.id);
 %}

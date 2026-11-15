@@ -8,17 +8,20 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
+import demo.lavka.entity.DeliveryAddress;
 import demo.lavka.entity.OrderStatus;
 import demo.lavka.entity.OrderItem;
 import demo.lavka.entity.Orders;
 import demo.lavka.entity.Products;
 import demo.lavka.entity.Role;
 import demo.lavka.entity.User;
+import demo.lavka.entity.UserAddress;
 import demo.lavka.model.CreateOrderRequest;
 import demo.lavka.model.OrderResponse;
 import demo.lavka.model.OrderStatusHistoryResponse;
 import demo.lavka.repository.OrderRepository;
 import demo.lavka.repository.ProductRepository;
+import demo.lavka.repository.UserAddressRepository;
 import demo.lavka.repository.UserRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -46,12 +49,14 @@ public class OrderService {
     private final OrderRepository orderRepository;
     private final UserRepository userRepository;
     private final ProductRepository productRepository;
+    private final UserAddressRepository addressRepository;
 
     public OrderService(OrderRepository orderRepository, UserRepository userRepository,
-                        ProductRepository productRepository) {
+                        ProductRepository productRepository, UserAddressRepository addressRepository) {
         this.orderRepository = orderRepository;
         this.userRepository = userRepository;
         this.productRepository = productRepository;
+        this.addressRepository = addressRepository;
     }
 
     @Transactional(readOnly = true)
@@ -78,7 +83,8 @@ public class OrderService {
 
     /**
      * Creates the order and takes the items from stock in one transaction: either everything is reserved,
-     * or nothing changes.
+     * or nothing changes. The order goes to the address from the request, or to the active one if none is given;
+     * a copy of it is stored in the order.
      */
     @Transactional
     public OrderResponse create(Long userId, CreateOrderRequest request) {
@@ -90,12 +96,15 @@ public class OrderService {
             }
         }
 
+        // checked before products are locked: a wrong address shouldn't hold up other orders
+        DeliveryAddress delivery = DeliveryAddress.copyOf(deliveryAddress(userId, request.addressId()));
+
         Map<Integer, Products> products = productRepository.findAllByIdForUpdate(productIds).stream()
                 .collect(Collectors.toMap(Products::getId, Function.identity()));
 
         // a reference, not a SELECT: only the id is needed for user_id
         User user = userRepository.getReferenceById(userId);
-        Orders order = new Orders(user);
+        Orders order = new Orders(user, delivery);
         for (CreateOrderRequest.Item item : request.items()) {
             Products product = products.get(item.productId());
             if (product == null) {
@@ -146,6 +155,18 @@ public class OrderService {
         log.info("Order status changed: id={} by userId={} ({}) {} -> {}", orderId, actor.getId(), actor.getRole(),
                 current, newStatus);
         return OrderResponse.from(order);
+    }
+
+    private UserAddress deliveryAddress(Long userId, Long addressId) {
+        if (addressId != null) {
+            // someone else's address is "not found", same as for orders
+            return addressRepository.findByIdAndUserId(addressId, userId)
+                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                            "Address " + addressId + " not found"));
+        }
+        return addressRepository.findByUserIdAndActiveTrue(userId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "No delivery address: add one with POST /users/me/addresses"));
     }
 
     // a cancelled order gives its items back, under the same lock as when they were taken

@@ -72,6 +72,7 @@ class OrderConcurrencyTest {
         cleanUp();
         mvc = MockMvcBuilders.webAppContextSetup(context).build();
         customer = TestUsers.customer(mvc, "anton@example.com");
+        TestUsers.address(mvc, customer, "Москва");
         warehouse = TestUsers.warehouse(mvc, jdbc, "warehouse@example.com");
         milk = productRepository.save(Products.builder().name("Milk").quantity(10).price(new BigDecimal("89.90")).build())
                 .getId();

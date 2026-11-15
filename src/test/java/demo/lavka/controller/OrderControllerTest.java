@@ -29,6 +29,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -73,6 +74,65 @@ class OrderControllerTest {
         orderRepository.deleteAll();
         userRepository.deleteAll();
         productRepository.deleteAll();
+    }
+
+    // --- delivery address ---
+
+    @Test
+    void orderGoesToActiveAddressByDefault() throws Exception {
+        create(token, items(milk, 1))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.delivery_address.city").value("Москва"))
+                .andExpect(jsonPath("$.delivery_address.street").value("Тверская"))
+                .andExpect(jsonPath("$.delivery_address.recipient_name").value("Антон Иванов"));
+    }
+
+    @Test
+    void orderGoesToChosenAddress() throws Exception {
+        Long dacha = TestUsers.address(mvc, token, "Солнечногорск");
+
+        create(token, withAddress(items(milk, 1), dacha))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.delivery_address.city").value("Солнечногорск"));
+    }
+
+    @Test
+    void addressOfAnotherUserOrNoAddressIsRejected() throws Exception {
+        String other = TestUsers.customer(mvc, "other@example.com");
+        Long othersAddress = TestUsers.address(mvc, other, "Казань");
+
+        create(token, withAddress(items(milk, 1), othersAddress))
+                .andExpect(status().isBadRequest())
+                .andExpect(status().reason("Address " + othersAddress + " not found"));
+
+        String homeless = TestUsers.customer(mvc, "homeless@example.com");
+        create(homeless, items(milk, 1))
+                .andExpect(status().isBadRequest())
+                .andExpect(status().reason("No delivery address: add one with POST /users/me/addresses"));
+
+        // nothing was taken from stock
+        assertThat(stock(milk)).isEqualTo(10);
+        assertThat(orderRepository.count()).isZero();
+    }
+
+    @Test
+    void orderKeepsAddressAfterItIsChangedOrDeleted() throws Exception {
+        Long home = jdbc.queryForObject("select id from user_addresses where city = 'Москва'", Long.class);
+        Long orderId = createAndGetId(token, items(milk, 1));
+
+        mvc.perform(put("/users/me/addresses/{id}", home).header("Authorization", TestUsers.bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON).content("""
+                                {"postal_code": "190000", "country": "Россия", "city": "Санкт-Петербург",
+                                 "street": "Невский", "house": "1", "recipient_name": "Антон Иванов"}
+                                """))
+                .andExpect(status().isOk());
+        mvc.perform(get("/orders/{id}", orderId).header("Authorization", TestUsers.bearer(token)))
+                .andExpect(jsonPath("$.delivery_address.city").value("Москва"));
+
+        mvc.perform(delete("/users/me/addresses/{id}", home).header("Authorization", TestUsers.bearer(token)))
+                .andExpect(status().isNoContent());
+        mvc.perform(get("/orders/{id}", orderId).header("Authorization", TestUsers.bearer(warehouse)))
+                .andExpect(jsonPath("$.delivery_address.city").value("Москва"));
     }
 
     // --- auth ---
@@ -342,7 +402,10 @@ class OrderControllerTest {
                         """.formatted(email)))
                 .andExpect(status().isCreated())
                 .andReturn().getResponse().getContentAsString();
-        return JsonPath.read(body, "$.access_token");
+        String accessToken = JsonPath.read(body, "$.access_token");
+        // without an address an order can't be placed
+        TestUsers.address(mvc, accessToken, "Москва");
+        return accessToken;
     }
 
     private Integer product(String name, int quantity, String price) {
@@ -352,6 +415,10 @@ class OrderControllerTest {
 
     private int stock(Integer productId) {
         return jdbc.queryForObject("select quantity from products where id = ?", Integer.class, productId);
+    }
+
+    private static String withAddress(String itemsBody, Long addressId) {
+        return itemsBody.substring(0, itemsBody.lastIndexOf('}')) + ", \"address_id\": " + addressId + "}";
     }
 
     private ResultActions create(String accessToken, String body) throws Exception {

@@ -42,7 +42,8 @@ class LiquibaseMigrationTests {
         assertThat(applied).containsExactly(
                 "001-create-users-table", "002-create-products-table", "003-create-orders-table",
                 "004-create-order-items-table", "004-create-order-status-history-table",
-                "005-users-role-check", "006-create-user-addresses-table");
+                "005-users-role-check", "006-create-user-addresses-table",
+                "007-user-addresses-active", "008-orders-delivery-address");
     }
 
     @Test
@@ -144,7 +145,15 @@ class LiquibaseMigrationTests {
                         "user_id bigint NO",
                         "status character varying NO",
                         "created_at timestamp with time zone NO",
-                        "completed_at timestamp with time zone YES");
+                        "completed_at timestamp with time zone YES",
+                        "delivery_recipient_name character varying YES",
+                        "delivery_postal_code character varying YES",
+                        "delivery_country character varying YES",
+                        "delivery_city character varying YES",
+                        "delivery_street character varying YES",
+                        "delivery_house character varying YES",
+                        "delivery_apartment character varying YES",
+                        "delivery_courier_note character varying YES");
     }
 
     @Test
@@ -276,7 +285,27 @@ class LiquibaseMigrationTests {
                 "recipient_name character varying NO",
                 "courier_note character varying YES",
                 "created_at timestamp with time zone NO",
-                "updated_at timestamp with time zone NO");
+                "updated_at timestamp with time zone NO",
+                "active boolean NO");
+    }
+
+    @Test
+    void userHasAtMostOneActiveAddress() {
+        long anton = insertUser("anton@example.com");
+        long maria = insertUser("maria@example.com");
+        insertAddress(anton, "1");
+        insertAddress(anton, "2");
+        insertAddress(maria, "1");
+
+        // a new address is not active by default
+        assertThat(jdbc.queryForObject("select count(*) from user_addresses where active", Integer.class)).isZero();
+
+        jdbc.update("update user_addresses set active = true where user_id = ? and house = '1'", anton);
+        // another user may have an active address of their own
+        jdbc.update("update user_addresses set active = true where user_id = ?", maria);
+        assertThatThrownBy(() -> jdbc.update(
+                "update user_addresses set active = true where user_id = ? and house = '2'", anton))
+                .isInstanceOf(DataIntegrityViolationException.class);
     }
 
     @Test
@@ -304,6 +333,27 @@ class LiquibaseMigrationTests {
                 insert into user_addresses (user_id, postal_code, country, city, street, house, apartment, recipient_name)
                 values (?, '101000', 'Россия', 'Москва', 'Тверская', '1', '', 'Антон Иванов')
                 """, userId))
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void orderDeliveryAddressIsAllOrNothing() {
+        long userId = insertUser("anton@example.com");
+
+        // an old order without an address
+        insertOrder(userId);
+        jdbc.update("""
+                insert into orders (user_id, delivery_recipient_name, delivery_postal_code, delivery_country,
+                                    delivery_city, delivery_street, delivery_house)
+                values (?, 'Антон Иванов', '101000', 'Россия', 'Москва', 'Тверская', '1')
+                """, userId);
+        // half an address
+        assertThatThrownBy(() -> jdbc.update(
+                "insert into orders (user_id, delivery_city) values (?, 'Москва')", userId))
+                .isInstanceOf(DataIntegrityViolationException.class);
+        // a note without an address
+        assertThatThrownBy(() -> jdbc.update(
+                "insert into orders (user_id, delivery_courier_note) values (?, 'домофон 45')", userId))
                 .isInstanceOf(DataIntegrityViolationException.class);
     }
 

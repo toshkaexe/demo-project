@@ -39,6 +39,22 @@ final class TestUsers {
         return token;
     }
 
+    /**
+     * Adds a delivery address; the user's first address becomes active, so orders can be placed.
+     *
+     * @return id of the address
+     */
+    static Long address(MockMvc mvc, String token, String city) throws Exception {
+        String body = mvc.perform(post("/users/me/addresses").header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON).content("""
+                                {"postal_code": "101000", "country": "Россия", "city": "%s", "street": "Тверская",
+                                 "house": "1", "recipient_name": "Антон Иванов"}
+                                """.formatted(city)))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        return ((Number) JsonPath.read(body, "$.id")).longValue();
+    }
+
     static String bearer(String token) {
         return "Bearer " + token;
     }

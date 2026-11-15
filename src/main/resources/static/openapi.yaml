@@ -29,7 +29,7 @@ tags:
   - name: auth
     description: регистрация, вход, обновление и отзыв токенов
   - name: users
-    description: текущий пользователь
+    description: текущий пользователь и его адреса доставки
   - name: products
     description: каталог товаров. Читать может кто угодно, менять — только сотрудник склада (`WAREHOUSE`)
   - name: orders
@@ -180,6 +180,148 @@ paths:
                 $ref: '#/components/schemas/User'
         '401':
           $ref: '#/components/responses/Unauthorized'
+
+  /users/me/addresses:
+    get:
+      tags: [users]
+      operationId: listAddresses
+      summary: Адреса доставки текущего пользователя
+      description: Только свои адреса, в порядке добавления. Нет адресов — пустой массив.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: список адресов
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Address'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [users]
+      operationId: createAddress
+      summary: Добавить адрес доставки
+      description: |
+        Пробелы по краям значений обрезаются, пустые `apartment` и `courier_note` сохраняются как `null`.
+        У одного пользователя не больше 10 адресов. Первый адрес сразу становится активным, следующие — нет.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddressRequest'
+      responses:
+        '201':
+          description: адрес создан
+          headers:
+            Location:
+              description: адрес нового ресурса, `/users/me/addresses/{id}`
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Address'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: '`Address limit reached: at most 10 addresses per user`'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /users/me/addresses/{id}:
+    parameters:
+      - $ref: '#/components/parameters/AddressId'
+    get:
+      tags: [users]
+      operationId: getAddress
+      summary: Один адрес доставки
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: адрес
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Address'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/AddressNotFound'
+    put:
+      tags: [users]
+      operationId: updateAddress
+      summary: Изменить адрес доставки
+      description: Заменяет все поля адреса (семантика PUT). Правила те же, что при создании. Признак `active` не меняется.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddressRequest'
+      responses:
+        '200':
+          description: изменённый адрес
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Address'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/AddressNotFound'
+    delete:
+      tags: [users]
+      operationId: deleteAddress
+      summary: Удалить адрес доставки
+      description: Если адрес был активным, активным становится самый старый из оставшихся.
+      security:
+        - bearerAuth: []
+      responses:
+        '204':
+          description: адрес удалён
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/AddressNotFound'
+
+  /users/me/addresses/{id}/active:
+    parameters:
+      - $ref: '#/components/parameters/AddressId'
+    put:
+      tags: [users]
+      operationId: activateAddress
+      summary: Сделать адрес активным
+      description: |
+        Активный адрес — тот, куда везут заказы. У пользователя он один: прежний активный адрес перестаёт быть активным.
+        Тело не нужно. Повторный вызов ничего не меняет.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: адрес, теперь активный
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Address'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/AddressNotFound'
 
   # ===== products =====
 
@@ -334,6 +476,9 @@ paths:
         2. уменьшает `quantity` каждого товара на заказанное количество;
         3. создаёт заказ в статусе `CREATED`, позиции с текущими ценами товаров и первую запись истории.
 
+        Адрес доставки — `address_id` из тела или, если его нет, активный адрес пользователя. В заказ копируется
+        сам адрес (`delivery_address`). Без адреса заказ не оформить.
+
         Если хотя бы одного товара не хватает, возвращается `409` и со склада ничего не списывается.
       security:
         - bearerAuth: []
@@ -359,7 +504,9 @@ paths:
         '400':
           description: |
             Тело не прошло проверку: пустой список, `quantity` меньше 1 или больше 1000,
-            один товар указан дважды, `Product {id} not found`.
+            один товар указан дважды, `Product {id} not found`,
+            `Address {id} not found` (адреса нет или он чужой),
+            `No delivery address: add one with POST /users/me/addresses` (у пользователя нет ни одного адреса).
           content:
             application/json:
               schema:
@@ -498,6 +645,13 @@ components:
       schema:
         type: integer
         format: int64
+    AddressId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
 
   responses:
     BadRequest:
@@ -530,6 +684,12 @@ components:
             $ref: '#/components/schemas/Error'
     OrderNotFound:
       description: '`Order {id} not found`: заказа нет или покупатель запросил чужой заказ'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    AddressNotFound:
+      description: '`Address {id} not found`: адреса нет или он принадлежит другому пользователю'
       content:
         application/json:
           schema:
@@ -606,6 +766,82 @@ components:
           description: в нижнем регистре
         role:
           $ref: '#/components/schemas/Role'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    AddressRequest:
+      type: object
+      description: тело создания и изменения адреса. Пробелы по краям обрезаются
+      required: [postal_code, country, city, street, house, recipient_name]
+      properties:
+        postal_code:
+          type: string
+          maxLength: 20
+          description: формат не проверяется, он разный в разных странах
+          examples: ['101000']
+        country:
+          type: string
+          maxLength: 100
+          examples: [Россия]
+        city:
+          type: string
+          maxLength: 100
+          examples: [Москва]
+        street:
+          type: string
+          maxLength: 300
+          examples: [Тверская]
+        house:
+          type: string
+          maxLength: 20
+          description: строка, не число
+          examples: [12к2]
+        apartment:
+          type: [string, 'null']
+          maxLength: 20
+          description: '`null` или пусто для частного дома'
+          examples: ['45']
+        recipient_name:
+          type: string
+          maxLength: 200
+          description: имя и фамилия получателя
+          examples: [Антон Иванов]
+        courier_note:
+          type: [string, 'null']
+          maxLength: 500
+          description: подъезд, этаж, код домофона и т. п.
+          examples: ['подъезд 3, домофон 45']
+
+    Address:
+      type: object
+      required: [id, postal_code, country, city, street, house, recipient_name, active, created_at, updated_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+        postal_code:
+          type: string
+        country:
+          type: string
+        city:
+          type: string
+        street:
+          type: string
+        house:
+          type: string
+        apartment:
+          type: [string, 'null']
+        recipient_name:
+          type: string
+        courier_note:
+          type: [string, 'null']
+        active:
+          type: boolean
+          description: активный адрес, сюда везут заказы. У пользователя с адресами ровно один активный
         created_at:
           type: string
           format: date-time
@@ -692,12 +928,17 @@ components:
                 format: int32
                 minimum: 1
                 maximum: 1000
+        address_id:
+          type: [integer, 'null']
+          format: int64
+          description: один из своих адресов доставки. Не указан — заказ едет на активный адрес
       examples:
         - items:
             - product_id: 1
               quantity: 2
             - product_id: 7
               quantity: 1
+          address_id: 3
 
     ChangeOrderStatusRequest:
       type: object
@@ -728,7 +969,7 @@ components:
 
     Order:
       type: object
-      required: [id, user_id, user_email, status, items, total, created_at, completed_at]
+      required: [id, user_id, user_email, status, items, total, created_at, completed_at, delivery_address]
       properties:
         id:
           type: integer
@@ -753,6 +994,31 @@ components:
           type: [string, 'null']
           format: date-time
           description: заполнен только у заказов в статусе `COMPLETED`
+        delivery_address:
+          description: |
+            копия адреса на момент оформления: правка или удаление адреса потом её не меняют.
+            `null` только у заказов, оформленных до появления адресов
+          oneOf:
+            - type: 'null'
+            - type: object
+              required: [recipient_name, postal_code, country, city, street, house, apartment, courier_note]
+              properties:
+                recipient_name:
+                  type: string
+                postal_code:
+                  type: string
+                country:
+                  type: string
+                city:
+                  type: string
+                street:
+                  type: string
+                house:
+                  type: string
+                apartment:
+                  type: [string, 'null']
+                courier_note:
+                  type: [string, 'null']
       examples:
         - id: 1
           user_id: 5
@@ -772,6 +1038,15 @@ components:
           total: 218.80
           created_at: '2026-11-01T19:50:00Z'
           completed_at: null
+          delivery_address:
+            recipient_name: Антон Иванов
+            postal_code: '101000'
+            country: Россия
+            city: Москва
+            street: Тверская
+            house: 12к2
+            apartment: '45'
+            courier_note: 'подъезд 3, домофон 45'
 
     OrderStatusHistoryEntry:
       type: object

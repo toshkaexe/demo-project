@@ -5,6 +5,7 @@ import java.time.Instant;
 import java.util.List;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import demo.lavka.entity.DeliveryAddress;
 import demo.lavka.entity.OrderItem;
 import demo.lavka.entity.OrderStatus;
 import demo.lavka.entity.Orders;
@@ -18,7 +19,9 @@ public record OrderResponse(
         List<Item> items,
         BigDecimal total,
         @JsonProperty("created_at") Instant createdAt,
-        @JsonProperty("completed_at") Instant completedAt) {
+        @JsonProperty("completed_at") Instant completedAt,
+        // null only for orders placed before delivery addresses existed
+        @JsonProperty("delivery_address") Delivery deliveryAddress) {
 
     /**
      * Reads items and their products: call it inside a transaction.
@@ -26,7 +29,31 @@ public record OrderResponse(
     public static OrderResponse from(Orders order) {
         return new OrderResponse(order.getId(), order.getUser().getId(), order.getUser().getEmail(), order.getStatus(),
                 order.getItems().stream().map(Item::from).toList(), order.getTotal(),
-                order.getCreatedAt(), order.getCompletedAt());
+                order.getCreatedAt(), order.getCompletedAt(), Delivery.from(order.getDeliveryAddress()));
+    }
+
+    /**
+     * The address as it was when the order was placed.
+     */
+    public record Delivery(
+            @JsonProperty("recipient_name") String recipientName,
+            @JsonProperty("postal_code") String postalCode,
+            String country,
+            String city,
+            String street,
+            String house,
+            String apartment,
+            @JsonProperty("courier_note") String courierNote) {
+
+        static Delivery from(DeliveryAddress address) {
+            if (address == null) {
+                return null;
+            }
+            return new Delivery(address.getRecipientName(), address.getPostalCode(), address.getCountry(),
+                    address.getCity(), address.getStreet(), address.getHouse(), address.getApartment(),
+                    address.getCourierNote());
+        }
+
     }
 
     public record Item(
