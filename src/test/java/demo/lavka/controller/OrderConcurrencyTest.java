@@ -3,6 +3,7 @@ package demo.lavka.controller;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -124,6 +125,51 @@ class OrderConcurrencyTest {
                     .containsOnlyOnce("409 Not enough stock for product " + milk + ": requested 1, available 0");
             assertThat(stock()).as("round %d: stock is 0, never negative", round).isZero();
             assertThat(orderRepository.count()).as("round %d: one order is saved", round).isEqualTo(ordersBefore + 1);
+        }
+    }
+
+    /**
+     * The response didn't come, the app retried while the first request was still running, and Anya pressed
+     * "place order" once more: several requests with one Idempotency-Key at the same moment. The retries wait
+     * for the first request's lock on the products and then find its order: one order, stock taken once.
+     */
+    @Test
+    void parallelRetriesWithOneKeyPlaceOneOrder() throws Exception {
+        for (int round = 1; round <= ROUNDS; round++) {
+            jdbc.update("update products set quantity = 10 where id = ?", milk);
+            long ordersBefore = orderRepository.count();
+            String key = UUID.randomUUID().toString();
+
+            List<String> results = new ArrayList<>();
+            ExecutorService pool = Executors.newFixedThreadPool(PARALLEL_REQUESTS);
+            try {
+                CountDownLatch start = new CountDownLatch(1);
+                List<Future<String>> futures = new ArrayList<>();
+                for (int i = 0; i < PARALLEL_REQUESTS; i++) {
+                    futures.add(pool.submit(() -> {
+                        start.await();
+                        var response = mvc.perform(post("/orders").header("Authorization", TestUsers.bearer(customer))
+                                        .header(OrderController.IDEMPOTENCY_KEY, key)
+                                        .contentType(MediaType.APPLICATION_JSON)
+                                        .content("{\"items\": [{\"product_id\": " + milk + ", \"quantity\": 2}]}"))
+                                .andReturn().getResponse();
+                        return response.getStatus() == 201
+                                ? "201 id=" + JsonPath.read(response.getContentAsString(), "$.id")
+                                : response.getStatus() + " " + response.getErrorMessage();
+                    }));
+                }
+                start.countDown();
+                for (Future<String> future : futures) {
+                    results.add(future.get(30, TimeUnit.SECONDS));
+                }
+            } finally {
+                pool.shutdownNow();
+            }
+
+            assertThat(results).as("round %d: every request gets 201 with the same order", round)
+                    .hasSize(PARALLEL_REQUESTS).allMatch(r -> r.startsWith("201 ")).containsOnly(results.getFirst());
+            assertThat(orderRepository.count()).as("round %d: one order", round).isEqualTo(ordersBefore + 1);
+            assertThat(stock()).as("round %d: stock is taken once", round).isEqualTo(8);
         }
     }
 

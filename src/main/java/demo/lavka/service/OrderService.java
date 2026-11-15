@@ -1,5 +1,11 @@
 package demo.lavka.service;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.Comparator;
+import java.util.HexFormat;
+import java.util.regex.Pattern;
 import java.util.HashSet;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -27,6 +33,7 @@ import demo.lavka.repository.UserAddressRepository;
 import demo.lavka.repository.UserRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -53,6 +60,10 @@ public class OrderService {
     // GET /orders: the page size when none is given, and the largest one a client may ask for
     public static final int DEFAULT_PAGE_SIZE = 20;
     public static final int MAX_PAGE_SIZE = 100;
+    // letters, digits, '-' and '_': a UUID fits, and nothing can break a log line or a header
+    private static final Pattern IDEMPOTENCY_KEY_FORMAT = Pattern.compile("[A-Za-z0-9_-]{1,100}");
+    // the unique constraint from changeset 009
+    private static final String IDEMPOTENCY_KEY_CONSTRAINT = "orders_user_idempotency_key_unique";
 
 
     private final OrderRepository orderRepository;
@@ -118,17 +129,45 @@ public class OrderService {
     }
 
     /**
+     * The order and whether it was placed by this request or found from an earlier one with the same
+     * Idempotency-Key ({@code replayed}).
+     */
+    public record CreateResult(OrderResponse order, boolean replayed) {
+    }
+
+    /**
      * Creates the order and takes the items from stock in one transaction: either everything is reserved,
      * or nothing changes. The order goes to the address from the request, or to the active one if none is given;
      * a copy of it is stored in the order.
+     * <p>
+     * <b>Idempotency.</b> With a key (header {@code Idempotency-Key}) a retry doesn't place a second order: the
+     * response got lost, the client sent the request again, the user pressed the button twice. The key is checked
+     * twice: before anything is locked (the usual retry, the order was committed long ago) and once more after the
+     * products are locked. The second check covers a retry that arrives while the first request is still running:
+     * the same key means the same products, so the retry waits for the first request's lock, and when it gets the
+     * rows the first order is committed and visible. The unique constraint on (user_id, idempotency_key) is the
+     * last line of defence.
+     *
+     * @param idempotencyKey null when the client sent none: then every request is a new order, as before
+     * @throws ResponseStatusException 422 if the key was already used for a different request
      */
     @Transactional
-    public OrderResponse create(Long userId, CreateOrderRequest request) {
+    public CreateResult create(Long userId, CreateOrderRequest request, String idempotencyKey) {
         Set<Integer> productIds = new HashSet<>();
         for (CreateOrderRequest.Item item : request.items()) {
             if (!productIds.add(item.productId())) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                         "Product " + item.productId() + " is listed twice, put the total quantity in one line");
+            }
+        }
+        String requestHash = null;
+        if (idempotencyKey != null) {
+            checkIdempotencyKey(idempotencyKey);
+            requestHash = requestHash(request);
+            // before the address: a retry must get its order even if the address was deleted since
+            Optional<CreateResult> earlier = earlierOrder(userId, idempotencyKey, requestHash);
+            if (earlier.isPresent()) {
+                return earlier.get();
             }
         }
 
@@ -137,6 +176,14 @@ public class OrderService {
 
         Map<Integer, Products> products = productRepository.findAllByIdForUpdate(productIds).stream()
                 .collect(Collectors.toMap(Products::getId, Function.identity()));
+
+        if (idempotencyKey != null) {
+            // a parallel request with this key may have committed while we were waiting for the lock
+            Optional<CreateResult> earlier = earlierOrder(userId, idempotencyKey, requestHash);
+            if (earlier.isPresent()) {
+                return earlier.get();
+            }
+        }
 
         // a reference, not a SELECT: only the id is needed for user_id
         User user = userRepository.getReferenceById(userId);
@@ -153,11 +200,60 @@ public class OrderService {
             product.setQuantity(product.getQuantity() - item.quantity());
             order.addItem(product, item.quantity());
         }
+        if (idempotencyKey != null) {
+            order.rememberIdempotencyKey(idempotencyKey, requestHash);
+        }
 
-        orderRepository.save(order);
-        log.info("Order created: id={} userId={} items={} total={}", order.getId(), userId,
-                order.getItems().size(), order.getTotal());
-        return OrderResponse.from(order);
+        try {
+            // flush here, not on commit: a clash on the unique key must become a clear answer, not a 500
+            orderRepository.saveAndFlush(order);
+        } catch (DataIntegrityViolationException e) {
+            if (idempotencyKey != null && String.valueOf(e.getMostSpecificCause().getMessage())
+                    .contains(IDEMPOTENCY_KEY_CONSTRAINT)) {
+                // same key, different products: no shared lock, both passed the checks; the other one won
+                throw new ResponseStatusException(HttpStatus.CONFLICT,
+                        "Another order with this Idempotency-Key is being placed right now");
+            }
+            throw e;
+        }
+        log.info("Order created: id={} userId={} items={} total={} idempotencyKey={}", order.getId(), userId,
+                order.getItems().size(), order.getTotal(), idempotencyKey != null);
+        return new CreateResult(OrderResponse.from(order), false);
+    }
+
+    private Optional<CreateResult> earlierOrder(Long userId, String idempotencyKey, String requestHash) {
+        return orderRepository.findByUserIdAndIdempotencyKey(userId, idempotencyKey).map(earlier -> {
+            if (!earlier.getRequestHash().equals(requestHash)) {
+                throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_CONTENT,
+                        "Idempotency-Key was already used for a different order: send a new key for a new order");
+            }
+            log.info("Order replayed: id={} userId={} (same Idempotency-Key)", earlier.getId(), userId);
+            return new CreateResult(OrderResponse.from(earlier), true);
+        });
+    }
+
+    private static void checkIdempotencyKey(String key) {
+        if (!IDEMPOTENCY_KEY_FORMAT.matcher(key).matches()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Idempotency-Key must be 1 to 100 characters: letters, digits, '-' and '_' (a UUID fits)");
+        }
+    }
+
+    /**
+     * SHA-256 of what the request asks for. Lines are sorted by product, so the same order sent with its lines
+     * in another order is still the same request; "no address" stays "no address" (the active one at that time).
+     */
+    static String requestHash(CreateOrderRequest request) {
+        String canonical = request.items().stream()
+                .sorted(Comparator.comparing(CreateOrderRequest.Item::productId))
+                .map(item -> item.productId() + "x" + item.quantity())
+                .collect(Collectors.joining(",", "items=", ";address=" + request.addressId()));
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256").digest(canonical.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(digest);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 is part of every JDK", e);
+        }
     }
 
     /**

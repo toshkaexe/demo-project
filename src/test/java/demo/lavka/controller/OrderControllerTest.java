@@ -1,6 +1,7 @@
 package demo.lavka.controller;
 
 import java.math.BigDecimal;
+import java.util.UUID;
 
 import com.jayway.jsonpath.JsonPath;
 import demo.lavka.TestcontainersConfiguration;
@@ -25,6 +26,7 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.context.WebApplicationContext;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.endsWith;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -164,6 +166,98 @@ class OrderControllerTest {
         mvc.perform(post("/orders").header("Authorization", TestUsers.bearer(token))
                         .contentType(MediaType.APPLICATION_JSON).content("{}"))
                 .andExpect(status().isBadRequest());
+    }
+
+    // --- idempotency ---
+
+    @Test
+    void retryWithTheSameKeyReturnsTheSameOrderAndTakesStockOnce() throws Exception {
+        String key = UUID.randomUUID().toString();
+        String body = items(milk, 2, bread, 1);
+
+        String first = createWithKey(token, key, body)
+                .andExpect(status().isCreated())
+                .andExpect(header().doesNotExist(OrderController.IDEMPOTENT_REPLAYED))
+                .andReturn().getResponse().getContentAsString();
+        Long id = ((Number) JsonPath.read(first, "$.id")).longValue();
+
+        // the response got lost, the client sends exactly the same request again
+        createWithKey(token, key, body)
+                .andExpect(status().isCreated())
+                .andExpect(header().string(OrderController.IDEMPOTENT_REPLAYED, "true"))
+                .andExpect(header().string("Location", endsWith("/orders/" + id)))
+                .andExpect(jsonPath("$.id").value(id))
+                .andExpect(jsonPath("$.items.length()").value(2));
+        // the same lines in another order are the same request
+        createWithKey(token, key, items(bread, 1, milk, 2))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.id").value(id));
+
+        assertThat(orderRepository.count()).isEqualTo(1);
+        assertThat(stock(milk)).isEqualTo(8);
+        assertThat(stock(bread)).isEqualTo(4);
+    }
+
+    @Test
+    void retryReturnsTheOrderEvenIfTheAddressIsGoneOrTheOrderMovedOn() throws Exception {
+        String key = UUID.randomUUID().toString();
+        Long id = idOf(createWithKey(token, key, items(milk, 1)).andExpect(status().isCreated()));
+        changeStatus(token, id, "CANCELLED").andExpect(status().isOk());
+
+        // a retry reports the order as it is now, it doesn't place it again
+        createWithKey(token, key, items(milk, 1))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.id").value(id))
+                .andExpect(jsonPath("$.status").value("CANCELLED"));
+        assertThat(orderRepository.count()).isEqualTo(1);
+        assertThat(stock(milk)).isEqualTo(10);
+    }
+
+    @Test
+    void sameKeyForADifferentOrderIs422() throws Exception {
+        String key = UUID.randomUUID().toString();
+        createWithKey(token, key, items(milk, 1)).andExpect(status().isCreated());
+
+        createWithKey(token, key, items(milk, 2))
+                .andExpect(status().isUnprocessableContent())
+                .andExpect(status().reason(containsString("Idempotency-Key was already used for a different order")));
+        createWithKey(token, key, items(bread, 1)).andExpect(status().isUnprocessableContent());
+
+        assertThat(orderRepository.count()).isEqualTo(1);
+        assertThat(stock(milk)).isEqualTo(9);
+        assertThat(stock(bread)).isEqualTo(5);
+    }
+
+    @Test
+    void keysBelongToTheirUser() throws Exception {
+        String key = UUID.randomUUID().toString();
+        Long mine = idOf(createWithKey(token, key, items(milk, 1)).andExpect(status().isCreated()));
+
+        // another customer happens to send the same key: a new order of their own, not mine
+        Long theirs = idOf(createWithKey(register("other@example.com"), key, items(milk, 1))
+                .andExpect(status().isCreated())
+                .andExpect(header().doesNotExist(OrderController.IDEMPOTENT_REPLAYED)));
+
+        assertThat(theirs).isNotEqualTo(mine);
+        assertThat(stock(milk)).isEqualTo(8);
+    }
+
+    @Test
+    void withoutAKeyEveryRequestIsANewOrder() throws Exception {
+        createAndGetId(token, items(milk, 1));
+        createAndGetId(token, items(milk, 1));
+
+        assertThat(orderRepository.count()).isEqualTo(2);
+        assertThat(stock(milk)).isEqualTo(8);
+    }
+
+    @Test
+    void keyMustBeShortAndPlain() throws Exception {
+        for (String bad : new String[] {"", " ", "x".repeat(101), "key with spaces", "ключ"}) {
+            createWithKey(token, bad, items(milk, 1)).andExpect(status().isBadRequest());
+        }
+        createWithKey(token, "x".repeat(100), items(milk, 1)).andExpect(status().isCreated());
+        assertThat(orderRepository.count()).isEqualTo(1);
     }
 
     // --- create ---
@@ -485,6 +579,16 @@ class OrderControllerTest {
     private ResultActions create(String accessToken, String body) throws Exception {
         return mvc.perform(post("/orders").header("Authorization", "Bearer " + accessToken)
                 .contentType(MediaType.APPLICATION_JSON).content(body));
+    }
+
+    private ResultActions createWithKey(String accessToken, String key, String body) throws Exception {
+        return mvc.perform(post("/orders").header("Authorization", "Bearer " + accessToken)
+                .header(OrderController.IDEMPOTENCY_KEY, key)
+                .contentType(MediaType.APPLICATION_JSON).content(body));
+    }
+
+    private static Long idOf(ResultActions result) throws Exception {
+        return ((Number) JsonPath.read(result.andReturn().getResponse().getContentAsString(), "$.id")).longValue();
     }
 
     private Long createAndGetId(String accessToken, String body) throws Exception {

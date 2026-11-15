@@ -867,6 +867,67 @@ Authorization: Bearer {{access_token}}
     client.test("unknown order: 404", () => {
         client.assert(response.status === 404, "status " + response.status);
     });
+    // a fresh Idempotency-Key for the next requests, so the file can run again and again
+    client.global.set("idempotency_key", "api-http-" + Date.now());
+%}
+
+
+### 48a. Orders: place with an Idempotency-Key -> 201, a new order, stock 8 - 1
+POST {{host}}/orders
+Authorization: Bearer {{access_token}}
+Idempotency-Key: {{idempotency_key}}
+Content-Type: application/json
+
+{ "items": [ { "product_id": {{product_id}}, "quantity": 1 } ] }
+
+> {%
+    client.test("idempotent create: 201, not a replay", () => {
+        client.assert(response.status === 201, "status " + response.status);
+        client.assert(response.headers.valueOf("Idempotent-Replayed") == null, "replayed " + response.headers.valueOf("Idempotent-Replayed"));
+    });
+    client.global.set("idempotent_order_id", response.body.id);
+%}
+
+
+### 48b. Orders: the same request again (the response "got lost") -> the same order, Idempotent-Replayed: true
+POST {{host}}/orders
+Authorization: Bearer {{access_token}}
+Idempotency-Key: {{idempotency_key}}
+Content-Type: application/json
+
+{ "items": [ { "product_id": {{product_id}}, "quantity": 1 } ] }
+
+> {%
+    client.test("retry: 201 with the order placed before", () => {
+        client.assert(response.status === 201, "status " + response.status);
+        client.assert(response.headers.valueOf("Idempotent-Replayed") === "true", "replayed " + response.headers.valueOf("Idempotent-Replayed"));
+        client.assert(response.body.id === client.global.get("idempotent_order_id"), "id " + response.body.id);
+    });
+%}
+
+
+### 48c. Products: the retry took nothing (still 8 - 1)
+GET {{host}}/products/{{product_id}}
+
+> {%
+    client.test("stock is taken once", () => {
+        client.assert(response.body.quantity === 7, "quantity " + response.body.quantity);
+    });
+%}
+
+
+### 48d. Orders: the same key for a different order -> 422
+POST {{host}}/orders
+Authorization: Bearer {{access_token}}
+Idempotency-Key: {{idempotency_key}}
+Content-Type: application/json
+
+{ "items": [ { "product_id": {{product_id}}, "quantity": 2 } ] }
+
+> {%
+    client.test("key reused for another order: 422", () => {
+        client.assert(response.status === 422, "status " + response.status);
+    });
 %}
 
 

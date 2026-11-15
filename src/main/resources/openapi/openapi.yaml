@@ -504,8 +504,23 @@ paths:
         сам адрес (`delivery_address`). Без адреса заказ не оформить.
 
         Если хотя бы одного товара не хватает, возвращается `409` и со склада ничего не списывается.
+
+        **Идемпотентность.** Клиент один раз генерирует ключ на попытку оформления (UUID) и шлёт его в
+        `Idempotency-Key`; при повторе того же заказа (ответ не дошёл, повторное нажатие) ключ тот же. Повтор не
+        создаёт второй заказ и ничего не списывает: возвращается уже созданный заказ (в текущем состоянии) с тем же
+        `201` и `Location` и заголовком `Idempotent-Replayed: true`. Ключ принадлежит пользователю. Тот же ключ с
+        другим телом — `422`. Без заголовка каждый запрос — новый заказ.
       security:
         - bearerAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: 'ключ попытки оформления: 1–100 символов `A-Z a-z 0-9 - _`, удобно UUID'
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9_-]{1,100}$'
+            example: 6f1c2b9e-4d3a-4c1e-9f7a-2b8d5e0c1a34
       requestBody:
         required: true
         content:
@@ -514,13 +529,18 @@ paths:
               $ref: '#/components/schemas/CreateOrderRequest'
       responses:
         '201':
-          description: заказ оформлен, товары списаны со склада
+          description: заказ оформлен, товары списаны со склада; или повтор с тем же `Idempotency-Key` — тот же заказ
           headers:
             Location:
               description: адрес нового заказа, `/orders/{id}`
               schema:
                 type: string
                 format: uri
+            Idempotent-Replayed:
+              description: '`true`, если заказ создан раньше запросом с тем же `Idempotency-Key` и сейчас ничего не списано'
+              schema:
+                type: string
+                enum: ['true']
           content:
             application/json:
               schema:
@@ -529,7 +549,7 @@ paths:
           description: |
             Тело не прошло проверку: пустой список, `quantity` меньше 1 или больше 1000,
             один товар указан дважды, `Product {id} not found`,
-            `Address {id} not found` (адреса нет или он чужой),
+            `Address {id} not found` (адреса нет или он чужой), `Idempotency-Key` неверного формата,
             `No delivery address: add one with POST /users/me/addresses` (у пользователя нет ни одного адреса).
           content:
             application/json:
@@ -538,7 +558,16 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '409':
-          description: '`Not enough stock for product {id}: requested N, available M`'
+          description: |
+            `Not enough stock for product {id}: requested N, available M`, или
+            `Another order with this Idempotency-Key is being placed right now`: тот же ключ одновременно с другим
+            телом, второй запрос проиграл гонку
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: '`Idempotency-Key was already used for a different order`: ключ уже использован для другого заказа, для нового заказа нужен новый ключ'
           content:
             application/json:
               schema:

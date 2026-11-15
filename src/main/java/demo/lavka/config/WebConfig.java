@@ -4,6 +4,7 @@ import java.util.List;
 
 import demo.lavka.auth.CurrentUserArgumentResolver;
 import demo.lavka.auth.RoleInterceptor;
+import demo.lavka.controller.OrderController;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpHeaders;
@@ -48,9 +49,10 @@ public class WebConfig implements WebMvcConfigurer {
         registry.addMapping("/**")
                 .allowedOrigins(corsConfig.allowedOrigins().toArray(String[]::new))
                 .allowedMethods("GET", "POST", "PUT", "PATCH", "DELETE")
-                .allowedHeaders(HttpHeaders.AUTHORIZATION, HttpHeaders.CONTENT_TYPE)
-                // the frontend reads the new order/product URL from Location after a 201
-                .exposedHeaders(HttpHeaders.LOCATION)
+                .allowedHeaders(HttpHeaders.AUTHORIZATION, HttpHeaders.CONTENT_TYPE, OrderController.IDEMPOTENCY_KEY)
+                // the frontend reads the new order/product URL from Location after a 201,
+                // and whether POST /orders was a retry of an order already placed
+                .exposedHeaders(HttpHeaders.LOCATION, OrderController.IDEMPOTENT_REPLAYED)
                 .allowCredentials(false)
                 .maxAge(3600);
     }

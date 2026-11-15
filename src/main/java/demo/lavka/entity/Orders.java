@@ -48,6 +48,13 @@ public class Orders {
     @Embedded
     private DeliveryAddress deliveryAddress;
 
+    // Idempotency-Key of the POST /orders that placed the order and a hash of that request; both null without the header
+    @Column(name = "idempotency_key", updatable = false, length = 100)
+    private String idempotencyKey;
+
+    @Column(name = "request_hash", updatable = false, length = 64)
+    private String requestHash;
+
     // items and history are saved and deleted together with the order
     @OneToMany(mappedBy = "order", cascade = CascadeType.ALL, orphanRemoval = true)
     @OrderBy("id")
@@ -69,6 +76,14 @@ public class Orders {
         this.user = user;
         this.deliveryAddress = deliveryAddress;
         statusHistory.add(new OrderStatusHistory(this, null, OrderStatus.CREATED, user));
+    }
+
+    /**
+     * Remembers the key a client sent with POST /orders, so a retry with it finds this order.
+     */
+    public void rememberIdempotencyKey(String key, String requestHash) {
+        this.idempotencyKey = key;
+        this.requestHash = requestHash;
     }
 
     @PrePersist
@@ -114,6 +129,14 @@ public class Orders {
 
     public Instant getCompletedAt() {
         return completedAt;
+    }
+
+    public String getIdempotencyKey() {
+        return idempotencyKey;
+    }
+
+    public String getRequestHash() {
+        return requestHash;
     }
 
     public DeliveryAddress getDeliveryAddress() {

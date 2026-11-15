@@ -43,7 +43,7 @@ class LiquibaseMigrationTests {
                 "001-create-users-table", "002-create-products-table", "003-create-orders-table",
                 "004-create-order-items-table", "004-create-order-status-history-table",
                 "005-users-role-check", "006-create-user-addresses-table",
-                "007-user-addresses-active", "008-orders-delivery-address");
+                "007-user-addresses-active", "008-orders-delivery-address", "009-orders-idempotency-key");
     }
 
     @Test
@@ -153,7 +153,35 @@ class LiquibaseMigrationTests {
                         "delivery_street character varying YES",
                         "delivery_house character varying YES",
                         "delivery_apartment character varying YES",
-                        "delivery_courier_note character varying YES");
+                        "delivery_courier_note character varying YES",
+                        "idempotency_key character varying YES",
+                        "request_hash character varying YES");
+    }
+
+    @Test
+    void idempotencyKeyIsUniquePerUserAndComesWithAHash() {
+        long anton = insertUser("anton@example.com");
+        long anya = insertUser("anya@example.com");
+        String hash = "a".repeat(64);
+        String insert = "insert into orders (user_id, idempotency_key, request_hash) values (?, ?, ?)";
+
+        jdbc.update(insert, anton, "key-1", hash);
+        // the same key of the same user is the same order
+        assertThatThrownBy(() -> jdbc.update(insert, anton, "key-1", hash))
+                .isInstanceOf(DataIntegrityViolationException.class);
+        // another user's key is a different order
+        jdbc.update(insert, anya, "key-1", hash);
+        // orders without a key are not limited: NULLs are distinct
+        jdbc.update("insert into orders (user_id) values (?)", anton);
+        jdbc.update("insert into orders (user_id) values (?)", anton);
+        // a key without a hash (or the other way round) can't tell a retry from a reuse
+        assertThatThrownBy(() -> jdbc.update("insert into orders (user_id, idempotency_key) values (?, 'key-2')", anton))
+                .isInstanceOf(DataIntegrityViolationException.class);
+        assertThatThrownBy(() -> jdbc.update("insert into orders (user_id, request_hash) values (?, ?)", anton, hash))
+                .isInstanceOf(DataIntegrityViolationException.class);
+        // only characters that can't break a header or a log line
+        assertThatThrownBy(() -> jdbc.update(insert, anton, "bad key\n", hash))
+                .isInstanceOf(DataIntegrityViolationException.class);
     }
 
     @Test

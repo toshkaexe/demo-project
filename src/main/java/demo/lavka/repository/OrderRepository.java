@@ -63,6 +63,10 @@ public interface OrderRepository extends JpaRepository<Orders, Long> {
     @Query("select o from Orders o where o.id = :id and o.user.id = :userId")
     Optional<Orders> findByIdAndUserIdForUpdate(@Param("id") Long id, @Param("userId") Long userId);
 
+    // an order placed earlier with this Idempotency-Key, with items for the response; keys are per user
+    @EntityGraph(attributePaths = {"user", "items", "items.product"})
+    Optional<Orders> findByUserIdAndIdempotencyKey(Long userId, String idempotencyKey);
+
     // an order of another user is "not found": the client can't tell whether it exists
     @EntityGraph(attributePaths = {"user", "items", "items.product"})
     Optional<Orders> findByIdAndUserId(Long id, Long userId);
