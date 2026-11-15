@@ -562,14 +562,27 @@ Content-Type: application/json
 %}
 
 
-### 29. Orders: my orders, newest first
-GET {{host}}/orders
+### 29. Orders: my orders, newest first, one page
+GET {{host}}/orders?page=0&size=20
 Authorization: Bearer {{access_token}}
 
 > {%
     client.test("list orders: 200, the new order is first", () => {
         client.assert(response.status === 200, "status " + response.status);
-        client.assert(response.body[0].id === client.global.get("order_id"), "first id " + response.body[0].id);
+        client.assert(response.body.content[0].id === client.global.get("order_id"), "first id " + response.body.content[0].id);
+        client.assert(response.body.page === 0 && response.body.size === 20, "page " + response.body.page);
+        client.assert(response.body.total_elements >= 1, "total " + response.body.total_elements);
+    });
+%}
+
+
+### 29a. Orders: page size above the limit
+GET {{host}}/orders?size=101
+Authorization: Bearer {{access_token}}
+
+> {%
+    client.test("list orders: size > 100 is 400", () => {
+        client.assert(response.status === 400, "status " + response.status);
     });
 %}
 

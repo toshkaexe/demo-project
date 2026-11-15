@@ -1,9 +1,12 @@
 package demo.lavka.repository;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
 import demo.lavka.entity.Orders;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.EntityGraph;
 import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -15,13 +18,25 @@ public interface OrderRepository extends JpaRepository<Orders, Long> {
 
     List<Orders> findByUserId(Long userId);
 
-    // newest first; the customer, items and their products in the same query, otherwise each order costs extra queries (N+1)
-    @EntityGraph(attributePaths = {"user", "items", "items.product"})
-    List<Orders> findByUserIdOrderByIdDesc(Long userId);
+    /*
+     * A page of the order list takes two queries. The first one pages over ids only, so LIMIT/OFFSET and the count
+     * run in SQL. A fetch join of collections (items) can't be paged in SQL: Hibernate would load every order
+     * and cut the page in memory (warning HHH90003004). The second query loads just these orders with their
+     * customer, items and products in one go, otherwise each order costs extra queries (N+1).
+     */
 
-    // for the warehouse: all orders, newest first
+    // a customer's orders; sorting (newest first) comes with the Pageable
+    @Query("select o.id from Orders o where o.user.id = :userId")
+    Page<Long> findIdsByUserId(@Param("userId") Long userId, Pageable pageable);
+
+    // for the warehouse: orders of every customer
+    @Query("select o.id from Orders o")
+    Page<Long> findAllIds(Pageable pageable);
+
+    // the orders of one page, in no particular order: the caller puts them in the order of the ids
     @EntityGraph(attributePaths = {"user", "items", "items.product"})
-    List<Orders> findAllByOrderByIdDesc();
+    @Query("select o from Orders o where o.id in :ids")
+    List<Orders> findWithItemsByIdIn(@Param("ids") Collection<Long> ids);
 
     // for the warehouse: any order
     @EntityGraph(attributePaths = {"user", "items", "items.product"})

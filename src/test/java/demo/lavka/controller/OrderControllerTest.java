@@ -9,6 +9,7 @@ import demo.lavka.entity.Products;
 import demo.lavka.repository.OrderRepository;
 import demo.lavka.repository.ProductRepository;
 import demo.lavka.repository.UserRepository;
+import demo.lavka.service.OrderService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -231,10 +232,54 @@ class OrderControllerTest {
 
         mvc.perform(get("/orders").header("Authorization", "Bearer " + token))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.length()").value(2))
-                .andExpect(jsonPath("$[0].id").value(second))
-                .andExpect(jsonPath("$[0].items[0].name").value("Bread"))
-                .andExpect(jsonPath("$[1].id").value(first));
+                .andExpect(jsonPath("$.content.length()").value(2))
+                .andExpect(jsonPath("$.content[0].id").value(second))
+                .andExpect(jsonPath("$.content[0].items[0].name").value("Bread"))
+                .andExpect(jsonPath("$.content[1].id").value(first))
+                .andExpect(jsonPath("$.total_elements").value(2));
+    }
+
+    @Test
+    void listIsPagedNewestFirst() throws Exception {
+        Long first = createAndGetId(token, items(milk, 1));
+        Long second = createAndGetId(token, items(bread, 1));
+        Long third = createAndGetId(token, items(milk, 1, bread, 1));
+        createAndGetId(register("other@example.com"), items(milk, 1));
+
+        mvc.perform(get("/orders").param("size", "2").header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content.length()").value(2))
+                .andExpect(jsonPath("$.content[0].id").value(third))
+                .andExpect(jsonPath("$.content[0].items.length()").value(2))
+                .andExpect(jsonPath("$.content[1].id").value(second))
+                .andExpect(jsonPath("$.page").value(0))
+                .andExpect(jsonPath("$.size").value(2))
+                .andExpect(jsonPath("$.total_elements").value(3))
+                .andExpect(jsonPath("$.total_pages").value(2));
+        mvc.perform(get("/orders").param("page", "1").param("size", "2").header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content.length()").value(1))
+                .andExpect(jsonPath("$.content[0].id").value(first));
+        // past the last page: an empty page, not an error
+        mvc.perform(get("/orders").param("page", "5").header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content.length()").value(0))
+                .andExpect(jsonPath("$.total_elements").value(3));
+        // no parameters: page 0 of the default size
+        mvc.perform(get("/orders").header("Authorization", "Bearer " + token))
+                .andExpect(jsonPath("$.size").value(OrderService.DEFAULT_PAGE_SIZE));
+    }
+
+    @Test
+    void pageSizeHasAnUpperLimit() throws Exception {
+        for (String[] bad : new String[][] {{"size", "101"}, {"size", "0"}, {"page", "-1"}, {"size", "abc"},
+                {"page", String.valueOf(Integer.MAX_VALUE)}}) {
+            mvc.perform(get("/orders").param(bad[0], bad[1]).header("Authorization", "Bearer " + token))
+                    .andExpect(status().isBadRequest());
+        }
+        mvc.perform(get("/orders").param("size", String.valueOf(OrderService.MAX_PAGE_SIZE))
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk());
     }
 
     @Test
@@ -358,7 +403,7 @@ class OrderControllerTest {
 
         changeStatus(token, id, "PROCESSING")
                 .andExpect(status().isForbidden())
-                .andExpect(status().reason("Only WAREHOUSE can move an order to PROCESSING, a customer can only cancel it"));
+                .andExpect(status().reason("Access denied"));
         assertThat(orderRepository.findById(id).orElseThrow().getStatus()).isEqualTo(OrderStatus.CREATED);
 
         changeStatus(token, id, "CANCELLED").andExpect(status().isOk());
@@ -378,9 +423,9 @@ class OrderControllerTest {
 
         mvc.perform(get("/orders").header("Authorization", TestUsers.bearer(warehouse)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.length()").value(2))
-                .andExpect(jsonPath("$[0].id").value(others))
-                .andExpect(jsonPath("$[1].id").value(mine));
+                .andExpect(jsonPath("$.content.length()").value(2))
+                .andExpect(jsonPath("$.content[0].id").value(others))
+                .andExpect(jsonPath("$.content[1].id").value(mine));
         getOrder(warehouse, others).andExpect(status().isOk()).andExpect(jsonPath("$.items[0].name").value("Bread"));
         mvc.perform(get("/orders/{id}/history", others).header("Authorization", TestUsers.bearer(warehouse)))
                 .andExpect(status().isOk());

@@ -10,6 +10,7 @@ import demo.lavka.model.ChangeOrderStatusRequest;
 import demo.lavka.model.CreateOrderRequest;
 import demo.lavka.model.OrderResponse;
 import demo.lavka.model.OrderStatusHistoryResponse;
+import demo.lavka.model.PageResponse;
 import demo.lavka.service.OrderService;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
@@ -19,6 +20,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
@@ -38,9 +40,15 @@ public class OrderController {
         this.orderService = orderService;
     }
 
+    /**
+     * One page of orders, newest first: {@code ?page=0&size=20}. {@code size} is at most
+     * {@value OrderService#MAX_PAGE_SIZE}, otherwise 400.
+     */
     @GetMapping
-    public List<OrderResponse> findAll(@CurrentUser User user) {
-        return orderService.findAll(user);
+    public PageResponse<OrderResponse> findAll(@CurrentUser User user,
+                                               @RequestParam(defaultValue = "0") int page,
+                                               @RequestParam(defaultValue = "" + OrderService.DEFAULT_PAGE_SIZE) int size) {
+        return orderService.findAll(user, page, size);
     }
 
     @GetMapping("/{id}")

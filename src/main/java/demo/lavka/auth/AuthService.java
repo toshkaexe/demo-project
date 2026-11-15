@@ -21,6 +21,8 @@ import org.springframework.web.server.ResponseStatusException;
 public class AuthService {
 
     private static final Logger log = LoggerFactory.getLogger(AuthService.class);
+    // the same 403 text everywhere: no role names in responses, the log has the details
+    public static final String ACCESS_DENIED = "Access denied";
 
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
@@ -121,13 +123,14 @@ public class AuthService {
     /**
      * Like {@link #authenticate}, and the user must have the given role.
      *
-     * @throws ResponseStatusException 403 if the role is different
+     * @throws ResponseStatusException 403 if the role is different. The client gets a neutral "Access denied":
+     *         role names are internals, not something to show to whoever probes the API. Details are in the log.
      */
     public User requireRole(String accessToken, Role role) {
         User user = authenticate(accessToken);
         if (user.getRole() != role) {
             log.warn("Access denied: userId={} role={} needs {}", user.getId(), user.getRole(), role);
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Only " + role + " can do this");
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, ACCESS_DENIED);
         }
         return user;
     }

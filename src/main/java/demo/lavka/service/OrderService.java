@@ -8,6 +8,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
+import demo.lavka.auth.AuthService;
 import demo.lavka.entity.DeliveryAddress;
 import demo.lavka.entity.OrderStatus;
 import demo.lavka.entity.OrderItem;
@@ -19,12 +20,17 @@ import demo.lavka.entity.UserAddress;
 import demo.lavka.model.CreateOrderRequest;
 import demo.lavka.model.OrderResponse;
 import demo.lavka.model.OrderStatusHistoryResponse;
+import demo.lavka.model.PageResponse;
 import demo.lavka.repository.OrderRepository;
 import demo.lavka.repository.ProductRepository;
 import demo.lavka.repository.UserAddressRepository;
 import demo.lavka.repository.UserRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -44,6 +50,9 @@ import static demo.lavka.entity.OrderStatus.CANCELLED;
 public class OrderService {
 
     private static final Logger log = LoggerFactory.getLogger(OrderService.class);
+    // GET /orders: the page size when none is given, and the largest one a client may ask for
+    public static final int DEFAULT_PAGE_SIZE = 20;
+    public static final int MAX_PAGE_SIZE = 100;
 
 
     private final OrderRepository orderRepository;
@@ -59,14 +68,41 @@ public class OrderService {
         this.addressRepository = addressRepository;
     }
 
+    /**
+     * One page of orders, newest first: a customer's own ones, or every order for the warehouse. The page size has
+     * an upper limit, so one request can't load the whole table with all items. See {@link OrderRepository} for
+     * why it takes two queries.
+     *
+     * @param page from 0
+     * @param size 1..{@value #MAX_PAGE_SIZE}
+     */
     @Transactional(readOnly = true)
-    public List<OrderResponse> findAll(User actor) {
-        List<Orders> orders = actor.getRole() == Role.WAREHOUSE
-                ? orderRepository.findAllByOrderByIdDesc()
-                : orderRepository.findByUserIdOrderByIdDesc(actor.getId());
-        return orders.stream()
+    public PageResponse<OrderResponse> findAll(User actor, int page, int size) {
+        if (page < 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "page must be >= 0, got " + page);
+        }
+        if (size < 1 || size > MAX_PAGE_SIZE) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "size must be between 1 and " + MAX_PAGE_SIZE + ", got " + size);
+        }
+        // the offset goes to SQL as an int: a huge page number would overflow it
+        if ((long) page * size > Integer.MAX_VALUE) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "page is too large");
+        }
+        Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "id"));
+        Page<Long> ids = actor.getRole() == Role.WAREHOUSE
+                ? orderRepository.findAllIds(pageable)
+                : orderRepository.findIdsByUserId(actor.getId(), pageable);
+        if (ids.isEmpty()) {
+            return PageResponse.of(ids, List.of());
+        }
+        Map<Long, Orders> orders = orderRepository.findWithItemsByIdIn(ids.getContent()).stream()
+                .collect(Collectors.toMap(Orders::getId, Function.identity()));
+        List<OrderResponse> content = ids.getContent().stream()
+                .map(orders::get)
                 .map(OrderResponse::from)
                 .toList();
+        return PageResponse.of(ids, content);
     }
 
     @Transactional(readOnly = true)
@@ -139,10 +175,12 @@ public class OrderService {
                 ? orderRepository.findByIdForUpdate(orderId)
                 : orderRepository.findByIdAndUserIdForUpdate(orderId, actor.getId()))
                 .orElseThrow(() -> notFound(orderId));
-        // assembling and delivering is the warehouse's job, a customer can only cancel
+        // assembling and delivering is the warehouse's job, a customer can only cancel;
+        // the response doesn't name roles, the log does
         if (actor.getRole() != Role.WAREHOUSE && newStatus != CANCELLED) {
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN,
-                    "Only " + Role.WAREHOUSE + " can move an order to " + newStatus + ", a customer can only cancel it");
+            log.warn("Access denied: userId={} role={} tried to move order {} to {}, only {} can",
+                    actor.getId(), actor.getRole(), orderId, newStatus, Role.WAREHOUSE);
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, AuthService.ACCESS_DENIED);
         }
         OrderStatus current = order.getStatus();
         // the allowed transitions are defined in OrderStatus

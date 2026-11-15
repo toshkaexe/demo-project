@@ -452,18 +452,42 @@ paths:
       tags: [orders]
       operationId: listOrders
       summary: Список заказов
-      description: Покупатель получает свои заказы, сотрудник склада — все заказы. Новые сверху.
+      description: |
+        Покупатель получает свои заказы, сотрудник склада — все заказы. Новые сверху.
+
+        Список отдаётся страницами: `?page=0&size=20`. `size` не больше 100, чтобы один запрос не загрузил
+        всю таблицу заказов со всеми позициями. Страница после последней приходит пустой (`content: []`), это не ошибка.
       security:
         - bearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          description: номер страницы, с 0
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: size
+          in: query
+          description: заказов на странице
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
       responses:
         '200':
-          description: список заказов
+          description: одна страница заказов
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/Order'
+                $ref: '#/components/schemas/OrderPage'
+        '400':
+          description: '`page must be >= 0`, `size must be between 1 and 100`, `page is too large` или параметр не число'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '401':
           $ref: '#/components/responses/Unauthorized'
     post:
@@ -581,7 +605,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          description: '`Only WAREHOUSE can move an order to X, a customer can only cancel it`'
+          description: '`Access denied`: покупатель попробовал поставить статус, кроме `CANCELLED`. Роли в ответе не называются'
           content:
             application/json:
               schema:
@@ -671,7 +695,7 @@ components:
           schema:
             $ref: '#/components/schemas/Error'
     WarehouseOnly:
-      description: '`Only WAREHOUSE can do this`: у пользователя роль `CUSTOMER`'
+      description: '`Access denied`: у пользователя нет нужной роли. Роли в ответе не называются'
       content:
         application/json:
           schema:
@@ -1048,6 +1072,32 @@ components:
             apartment: '45'
             courier_note: 'подъезд 3, домофон 45'
 
+    OrderPage:
+      type: object
+      required: [content, page, size, total_elements, total_pages]
+      properties:
+        content:
+          type: array
+          description: заказы этой страницы, новые сверху
+          items:
+            $ref: '#/components/schemas/Order'
+        page:
+          type: integer
+          description: номер этой страницы, с 0
+          example: 0
+        size:
+          type: integer
+          description: запрошенный размер страницы
+          example: 20
+        total_elements:
+          type: integer
+          format: int64
+          description: сколько всего заказов видно этому пользователю
+          example: 42
+        total_pages:
+          type: integer
+          description: сколько всего страниц при этом `size`
+          example: 3
     OrderStatusHistoryEntry:
       type: object
       required: [from_status, to_status, changed_at, changed_by]

@@ -96,7 +96,7 @@ class ProductControllerTest {
         mvc.perform(post("/products").header("Authorization", TestUsers.bearer(customer))
                         .contentType(MediaType.APPLICATION_JSON).content(json("Bread", 1, "1.00")))
                 .andExpect(status().isForbidden())
-                .andExpect(status().reason("Only WAREHOUSE can do this"));
+                .andExpect(status().reason("Access denied"));
         mvc.perform(put("/products/{id}", id).header("Authorization", TestUsers.bearer(customer))
                         .contentType(MediaType.APPLICATION_JSON).content(json("Hacked", 0, "0.00")))
                 .andExpect(status().isForbidden());
