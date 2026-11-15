@@ -62,9 +62,11 @@ public class AddressService {
                     "Address limit reached: at most " + MAX_ADDRESSES + " addresses per user");
         }
         UserAddress address = new UserAddress(owner,
-                required(request.postalCode()), required(request.country()), required(request.city()),
-                required(request.street()), required(request.house()), optional(request.apartment()),
-                required(request.recipientName()), optional(request.courierNote()));
+                required("postal_code", request.postalCode(), 20), required("country", request.country(), 100),
+                required("city", request.city(), 100), required("street", request.street(), 300),
+                required("house", request.house(), 20), optional("apartment", request.apartment(), 20),
+                required("recipient_name", request.recipientName(), 200),
+                optional("courier_note", request.courierNote(), 500));
         // the first address is the only one, so orders go there
         address.setActive(count == 0);
         addressRepository.save(address);
@@ -98,9 +100,11 @@ public class AddressService {
     public AddressResponse update(User actor, Long id, AddressRequest request) {
         UserAddress address = getOrThrow(actor, id);
         address.update(
-                required(request.postalCode()), required(request.country()), required(request.city()),
-                required(request.street()), required(request.house()), optional(request.apartment()),
-                required(request.recipientName()), optional(request.courierNote()));
+                required("postal_code", request.postalCode(), 20), required("country", request.country(), 100),
+                required("city", request.city(), 100), required("street", request.street(), 300),
+                required("house", request.house(), 20), optional("apartment", request.apartment(), 20),
+                required("recipient_name", request.recipientName(), 200),
+                optional("courier_note", request.courierNote(), 500));
         // flush so the response carries the updated_at set by @PreUpdate
         addressRepository.flush();
         log.info("Address updated: id={} userId={}", id, actor.getId());
@@ -137,18 +141,30 @@ public class AddressService {
     }
 
     /**
-     * The request is already checked by Bean Validation in the controller, this guards calls that skip it:
-     * the table rejects blank values anyway, but with a 500.
+     * The request is already checked by Bean Validation in the controller, this guards calls that skip it.
+     * The limits are the columns of {@code user_addresses}: without the check the table rejects the value anyway,
+     * but the client gets a 500 instead of a 400 with the field name.
      */
-    private static String required(String value) {
+    private static String required(String field, String value, int maxLength) {
         if (value == null || value.isBlank()) {
-            throw new IllegalArgumentException("required address field is blank");
+            throw badRequest(field + " must not be blank");
         }
-        return value.trim();
+        return checkLength(field, value.trim(), maxLength);
     }
 
-    private static String optional(String value) {
-        return value == null || value.isBlank() ? null : value.trim();
+    private static String optional(String field, String value, int maxLength) {
+        return value == null || value.isBlank() ? null : checkLength(field, value.trim(), maxLength);
+    }
+
+    private static String checkLength(String field, String value, int maxLength) {
+        if (value.length() > maxLength) {
+            throw badRequest(field + " must be at most " + maxLength + " characters");
+        }
+        return value;
+    }
+
+    private static ResponseStatusException badRequest(String reason) {
+        return new ResponseStatusException(HttpStatus.BAD_REQUEST, reason);
     }
 
 }

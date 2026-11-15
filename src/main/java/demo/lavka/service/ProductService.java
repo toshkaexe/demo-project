@@ -2,7 +2,6 @@ package demo.lavka.service;
 
 import java.math.BigDecimal;
 import java.util.List;
-import java.util.Objects;
 
 import demo.lavka.entity.Products;
 import demo.lavka.model.ProductRequest;
@@ -21,6 +20,8 @@ import org.springframework.web.server.ResponseStatusException;
 public class ProductService {
 
     private static final Logger log = LoggerFactory.getLogger(ProductService.class);
+    // VARCHAR(255) of products.name
+    static final int MAX_NAME_LENGTH = 255;
 
     private final ProductRepository productRepository;
 
@@ -42,8 +43,7 @@ public class ProductService {
 
     @Transactional
     public ProductResponse create(ProductRequest request) {
-        String name = request.name().trim();
-        validate(name, request.quantity(), request.price());
+        String name = validate(request);
         Products product = productRepository.save(Products.builder()
                 .name(name)
                 .quantity(request.quantity())
@@ -60,8 +60,7 @@ public class ProductService {
      */
     @Transactional
     public ProductResponse update(Integer id, ProductRequest request) {
-        String name = request.name().trim();
-        validate(name, request.quantity(), request.price());
+        String name = validate(request);
         Products product = productRepository.findByIdForUpdate(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Product " + id + " not found"));
         // replaces all fields at once (PUT semantics)
@@ -87,21 +86,39 @@ public class ProductService {
     }
 
     /**
-     * Same rules for create and update. The request is already checked by Bean Validation in the controller,
-     * this guards calls from other services that skip it.
+     * Same rules for create and update, the same as Bean Validation on {@link ProductRequest} and the columns
+     * of {@code products}. The controller has already checked the body, this guards calls that skip it.
+     * Every check runs before the value is used (no {@code trim()} or unboxing of a null), and a bad value is
+     * a 400 with the reason, not an exception that the client sees as 500.
+     *
+     * @return the trimmed name
      */
-    private static void validate(String name, int quantity, BigDecimal price) {
-        Objects.requireNonNull(name, "name must not be null");
-        if (name.isBlank()) {
-            throw new IllegalArgumentException("name must not be blank");
+    private static String validate(ProductRequest request) {
+        String name = request.name();
+        if (name == null || name.isBlank()) {
+            throw badRequest("name must not be blank");
         }
-        if (quantity < 0) {
-            throw new IllegalArgumentException("quantity must be >= 0, got " + quantity);
+        name = name.trim();
+        if (name.length() > MAX_NAME_LENGTH) {
+            throw badRequest("name must be at most " + MAX_NAME_LENGTH + " characters");
         }
-        Objects.requireNonNull(price, "price must not be null");
-        if (price.signum() < 0) {
-            throw new IllegalArgumentException("price must be >= 0, got " + price);
+        Integer quantity = request.quantity();
+        if (quantity == null || quantity < 0) {
+            throw badRequest("quantity must be >= 0, got " + quantity);
         }
+        BigDecimal price = request.price();
+        if (price == null || price.signum() < 0) {
+            throw badRequest("price must be >= 0, got " + price);
+        }
+        // NUMERIC(10, 2): at most 8 digits before the point and 2 after
+        if (price.scale() > 2 || price.precision() - price.scale() > 8) {
+            throw badRequest("price must have at most 8 digits before the point and 2 after, got " + price);
+        }
+        return name;
+    }
+
+    private static ResponseStatusException badRequest(String reason) {
+        return new ResponseStatusException(HttpStatus.BAD_REQUEST, reason);
     }
 
     private Products getOrThrow(Integer id) {

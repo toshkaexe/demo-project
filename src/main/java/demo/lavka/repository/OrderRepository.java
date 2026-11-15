@@ -39,6 +39,15 @@ public interface OrderRepository extends JpaRepository<Orders, Long> {
     @Query("select o from Orders o where o.id = :id")
     Optional<Orders> findByIdForUpdate(@Param("id") Long id);
 
+    /**
+     * Same lock, only on the customer's own order. The owner is part of the {@code WHERE}, so PostgreSQL never
+     * locks someone else's row: a customer can't make the warehouse wait on a foreign order, and a foreign order
+     * answers 404 at once, whether it is locked right now or not.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select o from Orders o where o.id = :id and o.user.id = :userId")
+    Optional<Orders> findByIdAndUserIdForUpdate(@Param("id") Long id, @Param("userId") Long userId);
+
     // an order of another user is "not found": the client can't tell whether it exists
     @EntityGraph(attributePaths = {"user", "items", "items.product"})
     Optional<Orders> findByIdAndUserId(Long id, Long userId);

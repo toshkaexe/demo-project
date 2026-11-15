@@ -1,6 +1,7 @@
 package demo.lavka.auth;
 
 import java.util.Locale;
+import java.util.UUID;
 
 import demo.lavka.auth.JWTService.VerifiedToken;
 import demo.lavka.entity.Role;
@@ -24,11 +25,14 @@ public class AuthService {
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
     private final JWTService jwtService;
+    // checked against when the email is unknown, so that login spends the same BCrypt time either way
+    private final String dummyPasswordHash;
 
     public AuthService(UserRepository userRepository, PasswordEncoder passwordEncoder, JWTService jwtService) {
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtService = jwtService;
+        this.dummyPasswordHash = passwordEncoder.encode(UUID.randomUUID().toString());
     }
 
     /**
@@ -50,19 +54,28 @@ public class AuthService {
         return jwtService.issueTokens(user.getId());
     }
 
+    /**
+     * An unknown email and a wrong password look the same to the client: the same error and the same time.
+     * Without the dummy check an unknown email answers without BCrypt, tens of milliseconds faster,
+     * and the response time tells which emails are registered.
+     * <p>
+     * The email is never logged: it is personal data, and the client sends any string here (no {@code @Email}),
+     * so a line break in it would forge log lines. The user id is enough to find the account.
+     */
     public TokenPair login(String email, String password) {
         String normalized = normalize(email);
         User user = userRepository.findByEmail(normalized).orElse(null);
-        // the client gets the same error in both cases, the log tells them apart
+        boolean passwordMatches = passwordEncoder.matches(password,
+                user != null ? user.getPasswordHash() : dummyPasswordHash);
         if (user == null) {
-            log.warn("Login failed: unknown email {}", normalized);
+            log.warn("Login failed: unknown email");
             throw unauthorized("Invalid email or password");
         }
-        if (!passwordEncoder.matches(password, user.getPasswordHash())) {
-            log.warn("Login failed: wrong password for userId={} email={}", user.getId(), normalized);
+        if (!passwordMatches) {
+            log.warn("Login failed: wrong password for userId={}", user.getId());
             throw unauthorized("Invalid email or password");
         }
-        log.info("Login succeeded: userId={} email={}", user.getId(), normalized);
+        log.info("Login succeeded: userId={}", user.getId());
         return jwtService.issueTokens(user.getId());
     }
 

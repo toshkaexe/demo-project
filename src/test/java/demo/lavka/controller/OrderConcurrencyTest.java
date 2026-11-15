@@ -162,6 +162,41 @@ class OrderConcurrencyTest {
         }
     }
 
+    @Test
+    void customerCantLockSomeoneElsesOrder() throws Exception {
+        Long orderId = createOrder(2);
+        String stranger = TestUsers.customer(mvc, "stranger@example.com");
+        CountDownLatch locked = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            // like the warehouse assembling the order: holds the order row FOR UPDATE
+            Future<?> holder = pool.submit(() -> transactions.executeWithoutResult(tx -> {
+                jdbc.queryForObject("select id from orders where id = ? for update", Long.class, orderId);
+                locked.countDown();
+                try {
+                    release.await(30, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }));
+            assertThat(locked.await(30, TimeUnit.SECONDS)).isTrue();
+
+            // the owner check is in the locking query, so the stranger doesn't queue up behind the lock:
+            // 404 comes right away, the same as for an order that doesn't exist
+            Future<Integer> cancel = pool.submit(() -> changeStatus(stranger, orderId, "CANCELLED"));
+            assertThat(cancel.get(5, TimeUnit.SECONDS)).isEqualTo(404);
+
+            release.countDown();
+            holder.get(30, TimeUnit.SECONDS);
+            assertThat(jdbc.queryForObject("select status from orders where id = ?", String.class, orderId))
+                    .isEqualTo("CREATED");
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
+        }
+    }
+
     // --- helpers ---
 
     private interface Request {

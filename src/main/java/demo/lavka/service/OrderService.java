@@ -134,8 +134,10 @@ public class OrderService {
      */
     @Transactional
     public OrderResponse changeStatus(User actor, Long orderId, OrderStatus newStatus) {
-        Orders order = orderRepository.findByIdForUpdate(orderId)
-                .filter(found -> canSee(actor, found))
+        // a customer locks only own orders: the owner check is in the locking query, not after it
+        Orders order = (actor.getRole() == Role.WAREHOUSE
+                ? orderRepository.findByIdForUpdate(orderId)
+                : orderRepository.findByIdAndUserIdForUpdate(orderId, actor.getId()))
                 .orElseThrow(() -> notFound(orderId));
         // assembling and delivering is the warehouse's job, a customer can only cancel
         if (actor.getRole() != Role.WAREHOUSE && newStatus != CANCELLED) {
@@ -183,11 +185,6 @@ public class OrderService {
                 ? orderRepository.findWithItemsById(orderId)
                 : orderRepository.findByIdAndUserId(orderId, actor.getId());
         return order.orElseThrow(() -> notFound(orderId));
-    }
-
-    // the warehouse sees every order, a customer only own ones
-    private static boolean canSee(User actor, Orders order) {
-        return actor.getRole() == Role.WAREHOUSE || order.getUser().getId().equals(actor.getId());
     }
 
     private static ResponseStatusException notFound(Long orderId) {
