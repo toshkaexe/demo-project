@@ -3,3 +3,6 @@
 auth:
   jwt:
     secret: test-secret-only-for-tests-0123456789abcdef
+
+cors:
+  allowed-origins: http://localhost:3000
