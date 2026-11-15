@@ -83,6 +83,11 @@ class AddressControllerTest {
         mvc.perform(put("/users/me/addresses/{id}", id).contentType(MediaType.APPLICATION_JSON).content(DACHA))
                 .andExpect(status().isUnauthorized());
         mvc.perform(delete("/users/me/addresses/{id}", id)).andExpect(status().isUnauthorized());
+        // the token is checked before the body: no validation details for an anonymous client
+        mvc.perform(post("/users/me/addresses").contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(put("/users/me/addresses/{id}", id).contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isUnauthorized());
 
         assertThat(addressRepository.count()).isEqualTo(1);
     }

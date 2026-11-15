@@ -149,6 +149,22 @@ class OrderControllerTest {
         mvc.perform(get("/orders").header("Authorization", "Bearer not-a-jwt")).andExpect(status().isUnauthorized());
     }
 
+    @Test
+    void tokenIsCheckedBeforeTheBody() throws Exception {
+        // a broken body without a token: 401, not 400 with validation details for an anonymous client
+        mvc.perform(post("/orders").contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(patch("/orders/1/status").contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(post("/orders").header("Authorization", "Bearer not-a-jwt")
+                        .contentType(MediaType.APPLICATION_JSON).content("not json"))
+                .andExpect(status().isUnauthorized());
+        // with a token the same body is a 400
+        mvc.perform(post("/orders").header("Authorization", TestUsers.bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isBadRequest());
+    }
+
     // --- create ---
 
     @Test

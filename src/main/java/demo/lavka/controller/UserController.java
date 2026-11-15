@@ -1,11 +1,10 @@
 package demo.lavka.controller;
 
-import demo.lavka.auth.AuthService;
-import demo.lavka.auth.BearerToken;
+import demo.lavka.auth.Authenticated;
+import demo.lavka.auth.CurrentUser;
+import demo.lavka.entity.User;
 import demo.lavka.model.UserResponse;
-import org.springframework.http.HttpHeaders;
 import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -13,15 +12,10 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/users")
 public class UserController {
 
-    private final AuthService authService;
-
-    public UserController(AuthService authService) {
-        this.authService = authService;
-    }
-
     @GetMapping("/me")
-    public UserResponse me(@RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorization) {
-        return UserResponse.from(authService.authenticate(BearerToken.from(authorization)));
+    @Authenticated
+    public UserResponse me(@CurrentUser User user) {
+        return UserResponse.from(user);
     }
 
 }

@@ -1,9 +1,13 @@
 package demo.lavka.config;
 
+import java.util.List;
+
+import demo.lavka.auth.CurrentUserArgumentResolver;
 import demo.lavka.auth.RoleInterceptor;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpHeaders;
+import org.springframework.web.method.support.HandlerMethodArgumentResolver;
 import org.springframework.web.servlet.config.annotation.CorsRegistry;
 import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
@@ -13,16 +17,24 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 public class WebConfig implements WebMvcConfigurer {
 
     private final RoleInterceptor roleInterceptor;
+    private final CurrentUserArgumentResolver currentUserResolver;
     private final CorsConfig corsConfig;
 
-    public WebConfig(RoleInterceptor roleInterceptor, CorsConfig corsConfig) {
+    public WebConfig(RoleInterceptor roleInterceptor, CurrentUserArgumentResolver currentUserResolver,
+                     CorsConfig corsConfig) {
         this.roleInterceptor = roleInterceptor;
+        this.currentUserResolver = currentUserResolver;
         this.corsConfig = corsConfig;
     }
 
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
         registry.addInterceptor(roleInterceptor);
+    }
+
+    @Override
+    public void addArgumentResolvers(List<HandlerMethodArgumentResolver> resolvers) {
+        resolvers.add(currentUserResolver);
     }
 
     /**
